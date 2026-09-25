@@ -3,21 +3,22 @@
 ## Spell Circle Assets
 
 ### Source
-**Repository**: [YerraRahul23/Dr.Strange-Magic-Effect](https://github.com/YerraRahul23/Dr.Strange-Magic-Effect)  
-**Author**: Yerra Rahul  
-**License**: MIT License (see below)  
+
+**Repository**: [YerraRahul23/Dr.Strange-Magic-Effect](https://github.com/YerraRahul23/Dr.Strange-Magic-Effect)
+**Author**: Yerra Rahul
+**License**: MIT License (see below)
 **Commit Used**: Cloned at `HEAD` on 2025-09-24 (shallow clone --depth=1)
 
 ### Files Imported
 
-| File | Type | Original Path | SHA256 |
-|------|------|---------------|--------|
-| `assets/spells/inner/blue.png` | Inner Circle | `Models/inner_circles/blue.png` | `pending` |
-| `assets/spells/inner/light_orange.png` | Inner Circle | `Models/inner_circles/light_orange.png` | `pending` |
-| `assets/spells/inner/orange.png` | Inner Circle | `Models/inner_circles/orange.png` | `pending` |
-| `assets/spells/outer/dark_red.png` | Outer Circle | `Models/outer_circles/dark_red.png` | `pending` |
-| `assets/spells/outer/orange.png` | Outer Circle | `Models/outer_circles/orange.png` | `pending` |
-| `assets/spells/outer/red.png` | Outer Circle | `Models/outer_circles/red.png` | `pending` |
+| File                                     | Type         | Original Path                             |
+| ---------------------------------------- | ------------ | ----------------------------------------- |
+| `assets/spells/inner/blue.png`         | Inner Circle | `Models/inner_circles/blue.png`         |
+| `assets/spells/inner/light_orange.png` | Inner Circle | `Models/inner_circles/light_orange.png` |
+| `assets/spells/inner/orange.png`       | Inner Circle | `Models/inner_circles/orange.png`       |
+| `assets/spells/outer/dark_red.png`     | Outer Circle | `Models/outer_circles/dark_red.png`     |
+| `assets/spells/outer/orange.png`       | Outer Circle | `Models/outer_circles/orange.png`       |
+| `assets/spells/outer/red.png`          | Outer Circle | `Models/outer_circles/red.png`          |
 
 > **Note**: SHA256 hashes to be computed and added after verification.
 
@@ -48,12 +49,15 @@ SOFTWARE.
 ```
 
 ### Usage in This Project
+
 - Assets used **as-is** (no modifications yet)
 - Used for: Inner and outer magic circle rendering with alpha compositing
 - Attribution preserved in this file and in runtime credits (planned)
 
 ### Future Asset Additions
+
 When adding new assets, append to this file with:
+
 1. Source URL
 2. Author
 3. License (full text or link)
@@ -65,11 +69,11 @@ When adding new assets, append to this file with:
 
 ## Third-Party Libraries (Planned)
 
-| Library | License | Purpose |
-|---------|---------|---------|
-| `mediapipe` | Apache 2.0 | Hand landmark detection |
+| Library           | License    | Purpose                       |
+| ----------------- | ---------- | ----------------------------- |
+| `mediapipe`     | Apache 2.0 | Hand landmark detection       |
 | `opencv-python` | Apache 2.0 | Image processing, compositing |
-| `numpy` | BSD-3 | Numerical computation |
-| `pytest` | MIT | Testing |
+| `numpy`         | BSD-3      | Numerical computation         |
+| `pytest`        | MIT        | Testing                       |
 
 Full dependency licenses will be documented in `LICENSES/` or via `pip-licenses` at release.
