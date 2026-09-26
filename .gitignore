@@ -52,3 +52,6 @@ Thumbs.db
 
 # Manager only
 SPRINT_PLAN.md
+
+# MediaPipe model files (downloaded, not committed)
+hand_landmarker.task

@@ -14,15 +14,6 @@ dependencies = [
     "opencv-python>=4.8.0",
     "numpy>=1.24.0",
 ]
-optional-dependencies = {
-    dev = [
-        "pytest>=7.4.0",
-        "pytest-cov>=4.1.0",
-        "ruff>=0.1.0",
-        "mypy>=1.5.0",
-        "pre-commit>=3.5.0",
-    ],
-}
 
 [project.optional-dependencies]
 dev = [
@@ -59,9 +50,8 @@ ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # do not perform function calls in argument defaults
 ]
-per-file-ignores = {
-    "tests/*": ["S101", "T201"],  # allow assert in tests, print in tests
-}
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "T201"]  # allow assert in tests, print in tests
 
 [tool.ruff.format]
 quote-style = "double"
