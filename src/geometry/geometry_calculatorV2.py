@@ -35,7 +35,7 @@ def palmCenter(landmarks_px, palm_center_strategy='five_point')-> np.ndarray:
 
    elif palm_center_strategy == 'weighted_mcp':
       palm_indices = [0, 5, 9, 13, 17]
-      palm_center = np.average(landmarks_px[palm_indices], weights=[1,1,2,1,1], axis=0)
+      palm_center = np.average(landmarks_px[palm_indices], weights=[1,1,2,1,1], axis=0)   # middle-finger MCP (landmark 9) weighted 2x
       
 
    return palm_center      
@@ -79,7 +79,7 @@ def landmark_normalization(landmarks_px, hand_size_px)-> np.ndarray:
 
 
 
-@dataclass
+@dataclass(frozen=True)
 class GeometryConfig:
     palm_center_strategy: str = "five_point"
     hand_size_method: str = "wrist_middle_tip"
@@ -101,22 +101,29 @@ class GeometryCalculator:
         self.image_width=image_width
         self.image_height=image_height
         self.config = config or GeometryConfig()
-    
-    def compute(self, hand: HandLandmarks) -> HandGeometry:
+
+    def compute(self, hand) -> HandGeometry:
+        """
+        Compute hand geometry.
+
+        hand: HandLandmarks (from the tracking subsystem). Must expose
+              `landmarks_norm`, an (N, 2) or (N, 3) array of MediaPipe
+              normalized coordinates.
+        """
         landmarks_norm = hand.landmarks_norm
         landmarks_px = norm2px(landmarks_norm, self.image_width, self.image_height)
         palm_center_px = palmCenter(landmarks_px, self.config.palm_center_strategy)
-        palm_center_norm = palm_center_px/[self.image_width, self.image_height]
+        palm_center_norm = palm_center_px / [self.image_width, self.image_height]
         hand_size_px = hand_size(landmarks_px, self.config.hand_size_method)
-        hand_size_norm = hand_size_px / max(self.image_width, self.image_height)
+        hand_size_norm = hand_size_px / max(self.image_width, self.image_height)  # fraction of the longer image side
         palm_angle_rad = palm_orientation(landmarks_px)
-        landmarks_centered= landmark_normalization(landmarks_px, hand_size_px)
+        landmarks_centered = landmark_normalization(landmarks_px, hand_size_px)
 
         return HandGeometry(
-        palm_center_px = tuple(palm_center_px),
-        palm_center_norm = tuple(palm_center_norm),
-        hand_size_px = hand_size_px,
-        hand_size_norm = hand_size_norm,
-        palm_angle_rad = palm_angle_rad,
-        landmarks_norm = landmarks_centered,
-)
+            palm_center_px=tuple(palm_center_px),
+            palm_center_norm=tuple(palm_center_norm),
+            hand_size_px=hand_size_px,
+            hand_size_norm=hand_size_norm,
+            palm_angle_rad=palm_angle_rad,
+            landmarks_norm=landmarks_centered,
+        )
