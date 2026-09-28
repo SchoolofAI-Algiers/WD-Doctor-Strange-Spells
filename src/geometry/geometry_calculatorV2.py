@@ -79,13 +79,15 @@ def landmark_normalization(landmarks_px, hand_size_px)-> np.ndarray:
 
 
 
-
-
-
-
-
-
 @dataclass
+class GeometryConfig:
+    palm_center_strategy: str = "five_point"
+    hand_size_method: str = "wrist_middle_tip"
+
+
+
+
+@dataclass(frozen=True)
 class HandGeometry:
     palm_center_px: tuple[float, float]
     palm_center_norm: tuple[float, float]
@@ -95,17 +97,18 @@ class HandGeometry:
     landmarks_norm: np.ndarray
 
 class GeometryCalculator:
-    def __init__(self, image_width: int, image_height: int):
+    def __init__(self, image_width: int, image_height: int,config: GeometryConfig | None = None):
         self.image_width=image_width
         self.image_height=image_height
+        self.config = config or GeometryConfig()
     
     def compute(self, hand: HandLandmarks) -> HandGeometry:
         landmarks_norm = hand.landmarks_norm
         landmarks_px = norm2px(landmarks_norm, self.image_width, self.image_height)
-        palm_center_px = palmCenter(landmarks_px)
+        palm_center_px = palmCenter(landmarks_px, self.config.palm_center_strategy)
         palm_center_norm = palm_center_px/[self.image_width, self.image_height]
-        hand_size_px = hand_size(landmarks_px)
-        hand_size_norm = hand_size(landmarks_norm)
+        hand_size_px = hand_size(landmarks_px, self.config.hand_size_method)
+        hand_size_norm = hand_size_px / max(self.image_width, self.image_height)
         palm_angle_rad = palm_orientation(landmarks_px)
         landmarks_centered= landmark_normalization(landmarks_px, hand_size_px)
 
