@@ -36,7 +36,8 @@ def palmCenter(landmarks_px, palm_center_strategy='five_point')-> np.ndarray:
    elif palm_center_strategy == 'weighted_mcp':
       palm_indices = [0, 5, 9, 13, 17]
       palm_center = np.average(landmarks_px[palm_indices], weights=[1,1,2,1,1], axis=0)   # middle-finger MCP (landmark 9) weighted 2x
-      
+   else:
+      raise ValueError(f"Unknown palm_center_strategy: {palm_center_strategy!r}")
 
    return palm_center      
 
@@ -53,6 +54,9 @@ def hand_size(landmarks_px, hand_size_method = 'wrist_middle_tip')-> float:
    elif hand_size_method == 'avg_fingers':
       distances = [distance(landmarks_px[0],landmarks_px[12]), distance(landmarks_px[0],landmarks_px[8]), distance(landmarks_px[0],landmarks_px[16]), distance(landmarks_px[0],landmarks_px[20])]
       hand_size_px = np.mean(distances)
+
+   else:
+      raise ValueError(f"Unknown hand_size_method: {hand_size_method!r}")
 
    return hand_size_px        
 
