@@ -76,10 +76,10 @@ class Capture:
             self.cap.release()
             self.cap = None  # we will call open that creates it again
 
-            with contextlib.suppress(
-                RuntimeError
-            ):  # if error of this type happens, we pass and keep executing code
-                self._open()  # camera still missing, read() will keep trying until its timeout runs out
+        with contextlib.suppress(
+            RuntimeError
+        ):  # if error of this type happens, we pass and keep executing code
+            self._open()  # camera still missing, read() will keep trying until its timeout runs out
 
     def read(
         self, timeout: float = 2.0
