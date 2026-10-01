@@ -13,7 +13,7 @@ def distance(p1,p2)-> float:
 def norm2px(landmarks_norm, image_width, image_height)-> np.ndarray:
 
    resolution = np.array([image_width,image_height])
-   landmarks_px = landmarks_norm*resolution
+   landmarks_px = landmarks_norm[:,:2]*resolution
    
    return landmarks_px       
 
@@ -21,7 +21,7 @@ def norm2px(landmarks_norm, image_width, image_height)-> np.ndarray:
 
 
 
-def palmCenter(landmarks_px, palm_center_strategy='five_point')-> np.ndarray:
+def palm_center(landmarks_px, palm_center_strategy='five_point')-> np.ndarray:
    if palm_center_strategy == 'five_point':
       palm_indices = [0, 5, 9, 13, 17]
       palm_center = np.mean(landmarks_px[palm_indices], axis=0)
@@ -73,7 +73,7 @@ def palm_orientation(landmarks_px)-> float:
 
 
 def landmark_normalization(landmarks_px, hand_size_px)-> np.ndarray:
-   if hand_size_px >= 1 :
+   if hand_size_px >= 1e-6 :
       centered = landmarks_px - landmarks_px[0]
       normalized = centered / hand_size_px
 
@@ -116,7 +116,7 @@ class GeometryCalculator:
         """
         landmarks_norm = hand.landmarks_norm
         landmarks_px = norm2px(landmarks_norm, self.image_width, self.image_height)
-        palm_center_px = palmCenter(landmarks_px, self.config.palm_center_strategy)
+        palm_center_px = palm_center(landmarks_px, self.config.palm_center_strategy)
         palm_center_norm = palm_center_px / [self.image_width, self.image_height]
         hand_size_px = hand_size(landmarks_px, self.config.hand_size_method)
         hand_size_norm = hand_size_px / max(self.image_width, self.image_height)  # fraction of the longer image side

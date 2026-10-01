@@ -1,8 +1,8 @@
 import pytest
 import numpy as np
-from geometry.geometry_calculatorV2 import norm2px
-from geometry.geometry_calculatorV2 import palmCenter
-from geometry.geometry_calculatorV2 import landmark_normalization
+from src.geometry.calculator import norm2px
+from src.geometry.calculator import palm_center
+from src.geometry.calculator import landmark_normalization
 
 
 
@@ -87,12 +87,12 @@ def make_landmarks():
     ],
     ids=["five_point", "wrist_only", "mcp_only", "weighted_mcp"]
 )
-def test_palmCenter(strategy, expected):
+def test_palm_center(strategy, expected):
     L = make_landmarks()
-    result = palmCenter(L, strategy)
+    result = palm_center(L, strategy)
     np.testing.assert_allclose(result, expected)
 
-def test_palmCenter_invalid_strategy():
+def test_palm_center_invalid_strategy():
     L = make_landmarks()
     with pytest.raises(ValueError):
-        palmCenter(L, 'not_a_real_strategy')
+        palm_center(L, 'not_a_real_strategy')
