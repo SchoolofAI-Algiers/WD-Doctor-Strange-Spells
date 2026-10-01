@@ -7,12 +7,20 @@ Converts raw MediaPipe output into the a list of hands, each hand a
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.core.base_options import BaseOptions
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MODEL_PATH = PROJECT_ROOT / "hand_landmarker.task"
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+)
 
 
 @dataclass
@@ -44,12 +52,30 @@ class HandTracker:
 
     def __init__(
         self,
-        model_path: str = "hand_landmarker.task",
+        model_path: str | Path | None = None,
         max_hands: int = 2,
         min_detection_confidence: float = 0.7,
         min_tracking_confidence: float = 0.5,
     ) -> None:
-        base_options = BaseOptions(model_asset_path=model_path)
+        """Initialize the HandTracker.
+
+        Args:
+            model_path: Path to the hand landmarker model file. Defaults to
+                ``hand_landmarker.task`` in the project root.
+            max_hands: Maximum number of hands to detect.
+            min_detection_confidence: Minimum confidence for hand detection.
+            min_tracking_confidence: Minimum confidence for hand tracking.
+
+        Raises:
+            FileNotFoundError: If the model file does not exist.
+        """
+        resolved_path = Path(model_path) if model_path else DEFAULT_MODEL_PATH
+        if not resolved_path.is_file():
+            raise FileNotFoundError(
+                f"Hand landmarker model not found at {resolved_path}. "
+                f"Download it from {MODEL_URL} (see DEVELOPMENT.md)."
+            )
+        base_options = BaseOptions(model_asset_path=str(resolved_path))
         options = vision.HandLandmarkerOptions(
             base_options=base_options,
             num_hands=max_hands,
@@ -81,29 +107,20 @@ class HandTracker:
         # increasing timestamp so it can use tracking, not just
         # per-frame detection)
         self._timestamp_ms += 33
-        result = self._landmarker.detect_for_video(
-            mp_image, self._timestamp_ms
-        )
+        result = self._landmarker.detect_for_video(mp_image, self._timestamp_ms)
 
         # Stages 3 & 4: convert coordinates, package the result
         return self._convert(result, frame_width, frame_height)
 
-    def _convert(
-        self, result, frame_width: int, frame_height: int
-    ) -> list[HandLandmarks]:
+    def _convert(self, result, frame_width: int, frame_height: int) -> list[HandLandmarks]:
         if not result.hand_landmarks:
             return []
 
         hands: list[HandLandmarks] = []
         for i, hand_lms in enumerate(result.hand_landmarks):
-            landmarks_norm = np.array(
-                [[lm.x, lm.y, lm.z] for lm in hand_lms], dtype=np.float32
-            )
+            landmarks_norm = np.array([[lm.x, lm.y, lm.z] for lm in hand_lms], dtype=np.float32)
             landmarks_px = np.array(
-                [
-                    [lm.x * frame_width, lm.y * frame_height, lm.z]
-                    for lm in hand_lms
-                ],
+                [[lm.x * frame_width, lm.y * frame_height, lm.z] for lm in hand_lms],
                 dtype=np.float32,
             )
 

@@ -23,10 +23,7 @@ HAND_IMAGE = PROJECT_ROOT / "tests" / "fixtures" / "hand.jpg"
 
 requires_model = pytest.mark.skipif(
     not MODEL_PATH.exists(),
-    reason=(
-        "hand_landmarker.task not found in project root "
-        "(see DEVELOPMENT.md)"
-    ),
+    reason=("hand_landmarker.task not found in project root (see DEVELOPMENT.md)"),
 )
 requires_hand_image = pytest.mark.skipif(
     not HAND_IMAGE.exists(),
@@ -49,9 +46,7 @@ def test_blank_frame_returns_empty_list(tracker):
 
 @requires_model
 def test_random_noise_frame_does_not_crash(tracker):
-    frame = np.random.default_rng(0).integers(
-        0, 255, (480, 640, 3), dtype=np.uint8
-    )
+    frame = np.random.default_rng(0).integers(0, 255, (480, 640, 3), dtype=np.uint8)
 
     hands = tracker.process(frame)
 
@@ -109,12 +104,8 @@ def test_sample_image_landmarks_have_the_agreed_format(tracker):
     assert hand.handedness in {"Left", "Right"}
     assert 0.5 <= hand.score <= 1.0
     # a clearly visible, fully in-frame hand: every landmark inside the image
-    assert np.all(hand.landmarks_px[:, 0] >= 0) and np.all(
-        hand.landmarks_px[:, 0] <= width
-    )
-    assert np.all(hand.landmarks_px[:, 1] >= 0) and np.all(
-        hand.landmarks_px[:, 1] <= height
-    )
+    assert np.all(hand.landmarks_px[:, 0] >= 0) and np.all(hand.landmarks_px[:, 0] <= width)
+    assert np.all(hand.landmarks_px[:, 1] >= 0) and np.all(hand.landmarks_px[:, 1] <= height)
 
 
 @requires_model
@@ -129,9 +120,7 @@ def test_sample_image_geometry_is_plausible(tracker):
     middle_base = px[9, :2]
     middle_tip = px[12, :2]
 
-    assert np.linalg.norm(middle_tip - wrist) > np.linalg.norm(
-        middle_base - wrist
-    )
+    assert np.linalg.norm(middle_tip - wrist) > np.linalg.norm(middle_base - wrist)
 
 
 @requires_model

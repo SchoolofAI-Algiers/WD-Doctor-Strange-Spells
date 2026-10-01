@@ -13,7 +13,11 @@ import mediapipe as mp
 import numpy as np
 import pytest
 from mediapipe.tasks.python import vision
-from src.tracking.hand_tracker import HandLandmarks, HandTracker
+from src.tracking.hand_tracker import (
+    MODEL_URL,
+    HandLandmarks,
+    HandTracker,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -140,9 +144,7 @@ def test_convert_output_shapes_and_dtypes():
 def test_convert_out_of_frame_values_are_not_clipped():
     """Documents current behavior: a hand partly off-screen gives values
     outside 0..1 and they are passed through as-is (not clipped)."""
-    hands = make_tracker()._convert(
-        make_result([make_hand(-0.1, 1.2)]), 100, 100
-    )
+    hands = make_tracker()._convert(make_result([make_hand(-0.1, 1.2)]), 100, 100)
 
     assert hands[0].landmarks_px[0][0] == pytest.approx(-10.0)
     assert hands[0].landmarks_px[0][1] == pytest.approx(120.0)
@@ -220,11 +222,15 @@ def test_property_in_frame_landmarks_stay_within_pixel_bounds(size, seed):
     rng = np.random.default_rng(seed)
     hand = [FakeLandmark(*rng.uniform(0, 1, 3)) for _ in range(21)]
 
-    px = make_tracker()._convert(
-        make_result([hand]),
-        width,
-        height,
-    )[0].landmarks_px
+    px = (
+        make_tracker()
+        ._convert(
+            make_result([hand]),
+            width,
+            height,
+        )[0]
+        .landmarks_px
+    )
 
     assert px.shape == (21, 3)
     assert np.all(px[:, 0] >= 0) and np.all(px[:, 0] <= width)
@@ -250,9 +256,7 @@ def test_property_pixels_are_consistent_with_normalized(seed):
         out.landmarks_norm[:, 1],
         rtol=1e-5,
     )
-    np.testing.assert_array_equal(
-        out.landmarks_px[:, 2], out.landmarks_norm[:, 2]
-    )
+    np.testing.assert_array_equal(out.landmarks_px[:, 2], out.landmarks_norm[:, 2])
 
 
 @pytest.mark.parametrize("n_hands", [1, 2])
@@ -291,9 +295,7 @@ def test_process_converts_bgr_to_rgb_before_detection():
 
 def test_process_uses_frame_dimensions_for_pixel_conversion():
     tracker = make_tracker()
-    tracker._landmarker.detect_for_video.return_value = make_result(
-        [make_hand(0.5, 0.5)]
-    )
+    tracker._landmarker.detect_for_video.return_value = make_result([make_hand(0.5, 0.5)])
     frame = np.zeros((480, 640, 3), dtype=np.uint8)  # height=480, width=640
 
     hands = tracker.process(frame)
@@ -314,10 +316,7 @@ def test_process_timestamps_strictly_increase():
     for _ in range(5):
         tracker.process(frame)
 
-    timestamps = [
-        c[0][1]
-        for c in tracker._landmarker.detect_for_video.call_args_list
-    ]
+    timestamps = [c[0][1] for c in tracker._landmarker.detect_for_video.call_args_list]
     assert timestamps == sorted(set(timestamps))
     assert len(timestamps) == 5
 
@@ -325,9 +324,7 @@ def test_process_timestamps_strictly_increase():
 def test_process_does_not_modify_the_input_frame():
     tracker = make_tracker()
     tracker._landmarker.detect_for_video.return_value = make_result([])
-    frame = np.random.default_rng(0).integers(
-        0, 255, (20, 20, 3), dtype=np.uint8
-    )
+    frame = np.random.default_rng(0).integers(0, 255, (20, 20, 3), dtype=np.uint8)
     original = frame.copy()
 
     tracker.process(frame)
@@ -338,10 +335,13 @@ def test_process_does_not_modify_the_input_frame():
 # --------------------------------------------------------------------------
 # __init__: configuration
 # --------------------------------------------------------------------------
-def test_init_passes_configuration_to_mediapipe():
+def test_init_passes_configuration_to_mediapipe(tmp_path):
+    model_file = tmp_path / "some_model.task"
+    model_file.touch()
+
     with patch.object(vision.HandLandmarker, "create_from_options") as create:
         HandTracker(
-            model_path="some_model.task",
+            model_path=model_file,
             max_hands=1,
             min_detection_confidence=0.6,
             min_tracking_confidence=0.4,
@@ -352,7 +352,17 @@ def test_init_passes_configuration_to_mediapipe():
     assert options.min_hand_detection_confidence == pytest.approx(0.6)
     assert options.min_tracking_confidence == pytest.approx(0.4)
     assert options.running_mode == vision.RunningMode.VIDEO
-    assert options.base_options.model_asset_path == "some_model.task"
+    assert options.base_options.model_asset_path == str(model_file)
+
+
+def test_init_raises_helpful_error_when_model_missing(tmp_path):
+    missing = tmp_path / "does_not_exist.task"
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        HandTracker(model_path=missing)
+
+    assert str(missing) in str(excinfo.value)
+    assert MODEL_URL in str(excinfo.value)
 
 
 def test_init_defaults_match_the_spec():
