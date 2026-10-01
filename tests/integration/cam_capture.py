@@ -1,5 +1,6 @@
 from src.capture.capture import Capture, list_available_cameras
 import cv2
+import numpy as np
 import time
 import sys
 
@@ -10,13 +11,25 @@ if __name__ == "__main__":
         print("No available cameras found.")
         sys.exit(1)
 
-    print("Cameras found:", list_available_cameras())
+    print("Cameras found:", available_cameras)
 
-    with Capture(width=640, height=480) as cam: #with is used to ensure that the camera is properly released when the block is exited, even if an error occurs. This is important for resource management and preventing issues with accessing the camera in future runs of the program.
+    with Capture(width=640, height=480) as cam: #we create an object of capture with width and height given, it will execute enter at beggining and exit at the end 
         print("Camera opened successfully!")
 
+        # check the format guarantee before the loop
+        frame = cam.read()
+        print("Frame:", frame.shape, frame.dtype)
+        assert frame.shape == (480, 640, 3), f"Unexpected shape {frame.shape}"
+        assert frame.dtype == np.uint8, f"Unexpected dtype {frame.dtype}"
+
+        print("Press q to quit, d to fake a disconnect, t to test the timeout")
+
         while True:
-            frame = cam.read()
+            try:
+                frame = cam.read()
+            except TimeoutError as e:
+                print("Timeout caught:", e)
+                break
 
             fps = cam.get_fps()
             cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
@@ -28,4 +41,17 @@ if __name__ == "__main__":
             if key == ord("q") or closed:
                 break
 
+            if key == ord("d"):
+                cam.cap.release()    # simulate the camera dying, read() should reconnect by itself
+
+            if key == ord("t"):
+                cam.device_id = 99   # a camera that doesn't exist
+                cam.cap.release()    # read() can't reconnect, so it should raise TimeoutError
+
     cv2.destroyAllWindows()
+
+    # after the with block the camera is released, so reading must be refused
+    try:
+        cam.read()
+    except RuntimeError as e:
+        print("Correctly refused:", e)
