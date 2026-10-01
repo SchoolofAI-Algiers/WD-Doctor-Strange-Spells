@@ -2,7 +2,7 @@ import cv2  # OpenCV  used for image processing and computer vision tasks
 import sys
 from collections import deque
 import time
-
+import numpy as np
 
 def list_available_cameras(max_index: int = 5) -> list[int]: # 5 is random chosen as max of cameras to ckeck
     """Return the camera indices that actually open."""
@@ -67,7 +67,7 @@ class Capture:
 
                 if ok and frame is not None:
                     self._times.append(time.monotonic())   # append time frame was captured to the deque
-                    return frame
+                    return self._normalize(frame)
 
             self._reconnect()  # read failed or camera is missing, try to recover
             time.sleep(0.1) #it gives time to usb to be back and camera to be reconnected.
@@ -90,6 +90,19 @@ class Capture:
         if self.cap is not None:
             self.cap.release() #if we dont release the camera, it will remain locked and unavailable for other applications or future runs of the program. This can lead to errors or unexpected behavior when trying to access the camera again.
             self.cap = None
+
+
+    def _normalize(self, frame):  # we guarantees BGR, 3 channels, uint8 , there are 3 possible  cases for the frame: grayscale, BGRA, and non-uint8. 
+
+        if frame.ndim == 2:                                 # grayscale -> BGR
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif frame.shape[2] == 4: #4 channels                          # BGRA -> BGR
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        if frame.dtype != np.uint8:                         # force uint8
+            frame = frame.astype(np.uint8)
+        return frame
+
+
     
     def __enter__(self):  # runs when the `with` block starts always
         return self
