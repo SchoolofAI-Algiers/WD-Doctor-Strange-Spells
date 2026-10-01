@@ -5,6 +5,7 @@ Detect hands, extract 21 landmarks per hand, provide normalized + pixel coordina
 
 ## Interface
 ```python
+
 @dataclass
 class HandLandmarks:
     landmarks_norm: np.ndarray  # shape (21, 3) — x, y, z
