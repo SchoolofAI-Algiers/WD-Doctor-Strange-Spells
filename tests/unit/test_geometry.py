@@ -1,35 +1,47 @@
-import pytest
-import numpy as np
-from types import SimpleNamespace
 from dataclasses import fields
-from src.geometry.calculator import norm2px
-from src.geometry.calculator import palm_center
-from src.geometry.calculator import landmark_normalization
-from src.geometry.calculator import GeometryCalculator, GeometryConfig, HandGeometry
+from types import SimpleNamespace
 
-
-
-
+import numpy as np
+import pytest
+from src.geometry.calculator import (
+    GeometryCalculator,
+    GeometryConfig,
+    HandGeometry,
+    distance,
+    hand_size,
+    landmark_normalization,
+    norm2px,
+    palm_center,
+    palm_orientation,
+)
 
 
 @pytest.mark.parametrize(
     "L, w, h, expected",
     [
-        (np.array([[0,1],[0.5,0.2]]), 200, 100, np.array([[0,100],[100,20]])),
-        (np.array([[0.8,0.3],[0.1,0.5],[0,0]]), 100, 100, np.array([[80,30],[10,50],[0,0]])),
-        (np.array([[1,0],[0,1],[1,1],[0,0]]), 100, 200, np.array([[100,0],[0,200],[100,200],[0,0]])),
-        (np.array([[0.45,0.7],[0.45,0.7]]), 1, 1, np.array([[0.45,0.7],[0.45,0.7]])),
-        (np.array([[0.5,0.5],[0.2,1],[0.75,0.9]]), 0, 0, np.array([[0,0],[0,0],[0,0]])),
-        (np.array([[0.5,0.5,0.3],[0.1,0.2,-0.4]]), 200, 100, np.array([[100,50],[20,20]]))
-   
+        (np.array([[0, 1], [0.5, 0.2]]), 200, 100, np.array([[0, 100], [100, 20]])),
+        (
+            np.array([[0.8, 0.3], [0.1, 0.5], [0, 0]]),
+            100,
+            100,
+            np.array([[80, 30], [10, 50], [0, 0]]),
+        ),
+        (
+            np.array([[1, 0], [0, 1], [1, 1], [0, 0]]),
+            100,
+            200,
+            np.array([[100, 0], [0, 200], [100, 200], [0, 0]]),
+        ),
+        (np.array([[0.45, 0.7], [0.45, 0.7]]), 1, 1, np.array([[0.45, 0.7], [0.45, 0.7]])),
+        (np.array([[0.5, 0.5], [0.2, 1], [0.75, 0.9]]), 0, 0, np.array([[0, 0], [0, 0], [0, 0]])),
+        (np.array([[0.5, 0.5, 0.3], [0.1, 0.2, -0.4]]), 200, 100, np.array([[100, 50], [20, 20]])),
     ],
-         ids=["higher_width", "square_image", "higher_height", "unit_scale", "zero_dims", "xyz_input"]
+    ids=["higher_width", "square_image", "higher_height", "unit_scale", "zero_dims", "xyz_input"],
 )
+def test_norm2px(L, w, h, expected):
 
-def test_norm2px(L,w,h,expected):
-
-   result = norm2px(L,w,h)
-   np.testing.assert_allclose(result, expected)
+    result = norm2px(L, w, h)
+    np.testing.assert_allclose(result, expected)
 
 
 def test_norm2px_xyz_output_shape():
@@ -44,46 +56,42 @@ def test_norm2px_z_has_no_effect():
     np.testing.assert_allclose(norm2px(L, 640, 480), norm2px(L_other_z, 640, 480))
 
 
-
-
-
-
-
-
 @pytest.mark.parametrize(
     "L, hand_size, expected",
     [
-        (np.array([[35,120],[10,0.5],[0,0]]), 0, np.array([[0,0],[0,0],[0,0]])),
-        (np.array([[0,0],[50,20],[80,45]]), 10, np.array([[0,0],[5,2],[8,4.5]])),
-        (np.array([[60,15],[45,100],[150,10]]), 20, np.array([[0,0],[-0.75,4.25],[4.5,-0.25]])),
-        (np.array([[35,120],[10,0.5],[0,0]]), 1e-9, np.array([[0,0],[0,0],[0,0]])),
-        (np.array([[35,120],[10,0.5],[0,0]]), 1e-6, np.array([[0,0],[0,0],[0,0]])),
-   
+        (np.array([[35, 120], [10, 0.5], [0, 0]]), 0, np.array([[0, 0], [0, 0], [0, 0]])),
+        (np.array([[0, 0], [50, 20], [80, 45]]), 10, np.array([[0, 0], [5, 2], [8, 4.5]])),
+        (
+            np.array([[60, 15], [45, 100], [150, 10]]),
+            20,
+            np.array([[0, 0], [-0.75, 4.25], [4.5, -0.25]]),
+        ),
+        (np.array([[35, 120], [10, 0.5], [0, 0]]), 1e-9, np.array([[0, 0], [0, 0], [0, 0]])),
+        (np.array([[35, 120], [10, 0.5], [0, 0]]), 1e-6, np.array([[0, 0], [0, 0], [0, 0]])),
     ],
-         ids = ["zero_hand_size", "simple", "wristHigher_or_moreLeft", "tiny_hand_size", "epsilon_boundary"]
+    ids=[
+        "zero_hand_size",
+        "simple",
+        "wristHigher_or_moreLeft",
+        "tiny_hand_size",
+        "epsilon_boundary",
+    ],
 )
+def test_landmark_normalization(L, hand_size, expected):
 
-def test_landmark_normalization(L,hand_size,expected):
-
-   result = landmark_normalization(L,hand_size)
-   np.testing.assert_allclose(result, expected)
+    result = landmark_normalization(L, hand_size)
+    np.testing.assert_allclose(result, expected)
 
 
 def test_landmark_normalization_translation_invariant():
-    L = np.array([[0,0], [50,20], [80,45]])
+    L = np.array([[0, 0], [50, 20], [80, 45]])
     L_translated = L + np.array([100, 50])
     hand_size = 10
-    
+
     result_original = landmark_normalization(L, hand_size)
     result_translated = landmark_normalization(L_translated, hand_size)
-    
+
     np.testing.assert_allclose(result_original, result_translated)
-
-
-
-
-
-
 
 
 def make_landmarks():
@@ -95,61 +103,69 @@ def make_landmarks():
     L[17] = [10, 10]
     return L
 
+
 @pytest.mark.parametrize(
     "strategy, expected",
     [
-        ('five_point', [36, 29]),
-        ('wrist_only', [20, 30]),
-        ('mcp_only', [40, 28.75]),
-        ('weighted_mcp', [37.5, 31.6666666667]),
+        ("five_point", [36, 29]),
+        ("wrist_only", [20, 30]),
+        ("mcp_only", [40, 28.75]),
+        ("weighted_mcp", [37.5, 31.6666666667]),
     ],
-    ids=["five_point", "wrist_only", "mcp_only", "weighted_mcp"]
+    ids=["five_point", "wrist_only", "mcp_only", "weighted_mcp"],
 )
 def test_palm_center(strategy, expected):
     L = make_landmarks()
     result = palm_center(L, strategy)
     np.testing.assert_allclose(result, expected)
 
+
 def test_palm_center_invalid_strategy():
     L = make_landmarks()
     with pytest.raises(ValueError):
-        palm_center(L, 'not_a_real_strategy')
+        palm_center(L, "not_a_real_strategy")
 
-
-from src.geometry.calculator import distance, hand_size, palm_orientation
-import numpy as np
-import pytest
 
 def test_distance_3_4_5():
     p1 = np.array([0, 0])
     p2 = np.array([3, 4])
     result = distance(p1, p2)
     assert result == pytest.approx(5.0)
+
+
 def test_distance_same_point_is_zero():
     p = np.array([2.0, 7.0])
     assert distance(p, p) == 0.0
+
+
 def test_distance_is_symmetric():
     a = np.array([1.0, 2.0])
     b = np.array([4.0, 6.0])
     assert distance(a, b) == pytest.approx(distance(b, a))
+
+
 def test_distance_negative_coordinates():
     p1 = np.array([-1, -1])
     p2 = np.array([2, 3])
     assert distance(p1, p2) == pytest.approx(5.0)
-#-------------------------------------------------------------------------------------------------------------------------------------------------chihab is goat----------------------
+
+
+# -------------------------------------------------------------------------------------------------------------------------------------------------chihab is goat----------------------
 def make_zero_landmarks():
     return np.zeros((21, 2))
+
+
 def test_hand_size_wrist_middle_tip():
     lm = make_zero_landmarks()
-    lm[0] = [0, 0]     # wrist
-    lm[12] = [3, 4]    # middle fingertip
+    lm[0] = [0, 0]  # wrist
+    lm[12] = [3, 4]  # middle fingertip
     assert hand_size(lm, "wrist_middle_tip") == pytest.approx(5.0)
+
 
 def test_hand_size_wrist_index_tip():
     lm = make_zero_landmarks()
-    lm[8] = [0, 10]    # index fingertip
+    lm[8] = [0, 10]  # index fingertip
     assert hand_size(lm, "wrist_index_tip") == pytest.approx(10.0)
-
 
 
 def test_hand_size_avg_fingers():
@@ -158,7 +174,7 @@ def test_hand_size_avg_fingers():
     lm[12] = [4, 0]
     lm[16] = [6, 0]
     lm[20] = [8, 0]
-    assert hand_size(lm, "avg_fingers") == pytest.approx(5.0)   # (2+4+6+8)/4
+    assert hand_size(lm, "avg_fingers") == pytest.approx(5.0)  # (2+4+6+8)/4
 
 
 def test_hand_size_default_is_wrist_middle_tip():
@@ -173,21 +189,21 @@ def test_hand_size_wrist_not_at_origin():
     lm[12] = [13, 14]
     assert hand_size(lm, "wrist_middle_tip") == pytest.approx(5.0)
 
-@pytest.mark.parametrize("lm5, expected", [
-    ([1, 0],  0.0),          # pointing right
-    ([0, 1],  np.pi / 2),    # pointing down (image y goes down)
-    ([-1, 0], np.pi),        # pointing left
-    ([0, -1], -np.pi / 2),   # pointing up
-])
+
+@pytest.mark.parametrize(
+    "lm5, expected",
+    [
+        ([1, 0], 0.0),  # pointing right
+        ([0, 1], np.pi / 2),  # pointing down (image y goes down)
+        ([-1, 0], np.pi),  # pointing left
+        ([0, -1], -np.pi / 2),  # pointing up
+    ],
+)
 def test_palm_orientation(lm5, expected):
     lm = np.zeros((21, 2))
     lm[9] = [0, 0]
     lm[5] = lm5
     assert palm_orientation(lm) == pytest.approx(expected)
-
-
-
-
 
 
 IMG_W, IMG_H = 200, 100
