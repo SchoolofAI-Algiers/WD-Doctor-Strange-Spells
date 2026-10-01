@@ -73,7 +73,7 @@ def palm_orientation(landmarks_px)-> float:
 
 
 def landmark_normalization(landmarks_px, hand_size_px)-> np.ndarray:
-   if hand_size_px >= 1e-6 :
+   if hand_size_px > 1e-6 :
       centered = landmarks_px - landmarks_px[0]
       normalized = centered / hand_size_px
 
