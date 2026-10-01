@@ -7,6 +7,7 @@ landmarker is replaced by a mock, and its results by small fake objects.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import mediapipe as mp
@@ -366,7 +367,10 @@ def test_init_raises_helpful_error_when_model_missing(tmp_path):
 
 
 def test_init_defaults_match_the_spec():
-    with patch.object(vision.HandLandmarker, "create_from_options") as create:
+    with (
+        patch.object(Path, "is_file", return_value=True),
+        patch.object(vision.HandLandmarker, "create_from_options") as create,
+    ):
         HandTracker()
 
     options = create.call_args[0][0]
