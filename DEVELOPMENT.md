@@ -49,3 +49,36 @@ pre-commit run --all-files
 ## IDE Setup (VS Code)
 
 Install extensions: **Ruff**, **MyPy**, **Python**. Settings auto-configured via `pyproject.toml`.
+
+## Integration tests setup
+
+The 11 integration tests use the real MediaPipe model and a sample image.
+Neither is downloaded automatically, so without them all 11 tests are skipped.
+
+### 1. Download the model
+
+Place `hand_landmarker.task` in the repo root:
+
+```powershell
+# Windows (PowerShell)
+Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" -OutFile hand_landmarker.task
+```
+
+```bash
+# macOS / Linux
+curl -L -o hand_landmarker.task \
+  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+```
+
+The model file is not committed to the repo.
+
+### 2. Sample image
+
+The tests expect a photo of one open hand (clear, well lit) at
+`tests/fixtures/hand.jpg`. It is committed to the repo.
+
+### 3. Run the tests
+
+```bash
+pytest tests/integration -v
+```

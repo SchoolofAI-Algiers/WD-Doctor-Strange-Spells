@@ -15,7 +15,6 @@ dependencies = [
     "numpy>=1.24.0",
 ]
 
-
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
@@ -51,10 +50,8 @@ ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # do not perform function calls in argument defaults
 ]
-
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "T201"]
-
+"tests/*" = ["S101", "T201"]  # allow assert in tests, print in tests
 
 [tool.ruff.format]
 quote-style = "double"
@@ -74,7 +71,7 @@ no_implicit_optional = true
 show_error_codes = true
 pretty = true
 
-[tool.mypy.overrides]
+[[tool.mypy.overrides]]
 module = [
     "mediapipe.*",
     "cv2.*",
