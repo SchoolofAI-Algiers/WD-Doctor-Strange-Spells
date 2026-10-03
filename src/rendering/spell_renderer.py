@@ -224,9 +224,10 @@ def load_asset(path: str, key_white: bool = False, tint=None) -> np.ndarray:
         # line art on white: white becomes transparent, ink keeps its colour
         bgr = img.astype(np.float32)
         m = bgr.min(axis=2, keepdims=True)         # 255 = paper, 0 = ink
+        color = bgr - m                            # compute BEFORE wiping the haze
         m[m > 240] = 255.0                         # wipe JPEG haze
         alpha = 1.0 - m / 255.0
-        color = bgr - m                            # already premultiplied
+        color *= (alpha > 0)                       # no colour where fully transparent
         img = np.concatenate([color, alpha], axis=2)
     else:
         if img.shape[2] == 3:
