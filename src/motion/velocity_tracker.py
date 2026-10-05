@@ -49,6 +49,27 @@ class VelocityTracker:
         """
         history = self._history.setdefault(hand_id, _HandVelocityHistory())
 
+        # Guard against dt=0 (two frames with the same timestamp) and
+        # negative dt (a clock glitch). Dividing by dt would otherwise
+        # crash or produce a nonsensical huge/negative velocity.
+        if dt <= 0.0:
+            if history.prev_velocity_smooth is None:
+                history.prev_position = position_px
+                history.prev_velocity_smooth = (0.0, 0.0)
+                return VelocityResult(
+                    velocity_px_s=(0.0, 0.0),
+                    speed_px_s=0.0,
+                    direction_rad=0.0,
+                    acceleration_px_s2=(0.0, 0.0),
+                )
+            vx_smooth, vy_smooth = history.prev_velocity_smooth
+            return VelocityResult(
+                velocity_px_s=(vx_smooth, vy_smooth),
+                speed_px_s=math.hypot(vx_smooth, vy_smooth),
+                direction_rad=math.atan2(vy_smooth, vx_smooth),
+                acceleration_px_s2=(0.0, 0.0),
+            )
+
         # First time we ever see this hand: no "previous" to compare
         # against, so velocity/acceleration are both zero this frame.
         if history.prev_position is None:
@@ -68,8 +89,8 @@ class VelocityTracker:
         vy = (curr_y - prev_y) / dt
 
         # --- smoothing (EMA): blend new reading with recent history ---
-        # prev_velocity_smooth is always set together with prev_position
-        # (see the first-frame branch above), so this is never None here.
+        # prev_velocity_smooth is always set together with prev_position,
+        # so this is never None here (mypy can't trace that on its own).
         assert history.prev_velocity_smooth is not None
         prev_vx_smooth, prev_vy_smooth = history.prev_velocity_smooth
         vx_smooth = self._alpha * vx + (1 - self._alpha) * prev_vx_smooth
