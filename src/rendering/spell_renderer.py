@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import math
 from enum import Enum
+from dataclasses import replace
 
 ASSET_SIZE = 512
 ASSET_RADIUS = 256
@@ -126,6 +127,7 @@ class SpellRenderer:
         st.last_transform = transform
         return transform
 
+
     def ghost_spells(self, seen_ids):
         """Fade out hands that were tracked before but are missing this frame.
 
@@ -140,11 +142,13 @@ class SpellRenderer:
             cfg = self._spells[st.spell_id]
             st.fade -= 1.0 / max(1, cfg.fade_out_frames)
             if st.fade <= 0.0:
-                del self._hands[hid]               # fully faded: forget this hand
+                del self._hands[hid]  # fully faded: forget this hand
                 continue
-            t = st.last_transform                  # reuse the stored object
-            t.opacity = cfg.opacity * st.confidence * st.fade
-            ghosts.append((t, None))               # render() doesn't use the gesture
+            t = replace(
+                st.last_transform,
+                opacity=cfg.opacity * st.confidence * st.fade,
+            )
+            ghosts.append((t, None))  # render() doesn't use the gesture
         return ghosts
 
     def _draw_layer(self, roi, warp, tmp, inv, asset, scale, dst_c, angle, opacity) -> None:
