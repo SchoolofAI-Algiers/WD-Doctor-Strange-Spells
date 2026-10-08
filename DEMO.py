@@ -15,9 +15,8 @@ import cv2
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
-
-from rendering.spell_renderer import GestureState, SpellRenderer
-from rendering.spells import make_spells
+from src.rendering.spell_renderer import GestureState, SpellRenderer
+from src.rendering.spells import make_spells
 
 CAM_INDEX = 0
 SHOW_CENTER = True  # draw a dot on the palm center
@@ -61,13 +60,21 @@ def draw_palm_center(frame, geometry, color=(0, 255, 0)) -> None:
     cx, cy = (int(v) for v in geometry.palm_center_px)
     cv2.circle(frame, (cx, cy), 6, color, -1, cv2.LINE_AA)  # filled dot
     cv2.circle(frame, (cx, cy), 12, color, 2, cv2.LINE_AA)  # outer ring
-    cv2.putText(frame, f"({cx}, {cy})", (cx + 16, cy - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+    cv2.putText(
+        frame,
+        f"({cx}, {cy})",
+        (cx + 16, cy - 8),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        color,
+        1,
+        cv2.LINE_AA,
+    )
 
 
 def make_tracker() -> vision.HandLandmarker:
     if not MODEL_PATH.exists():
-        print("Downloading hand model...")
+        print("Downloading hand model...")  # noqa: T201
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
     options = vision.HandLandmarkerOptions(
         base_options=mp_python.BaseOptions(model_asset_path=str(MODEL_PATH)),
@@ -131,8 +138,16 @@ def main() -> None:
 
         fps = 1.0 / max(now - prev, 1e-6)
         prev = now
-        cv2.putText(frame, f"{fps:.0f} fps", (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            f"{fps:.0f} fps",
+            (10, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
         cv2.imshow("shield demo", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
