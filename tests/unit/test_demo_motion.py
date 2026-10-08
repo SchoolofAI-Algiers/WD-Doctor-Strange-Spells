@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.motion.Analyzer import MotionAnalyzer, MotionState  # noqa: E402
+from src.motion.analyzer import MotionAnalyzer, MotionState  # noqa: E402
 from src.motion.motion import DepthTrend  # noqa: E402
 
 W, H, FPS = 960, 540, 30
