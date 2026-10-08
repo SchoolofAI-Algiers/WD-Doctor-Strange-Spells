@@ -1,35 +1,21 @@
-#python -m pytest tests/unit/test_trajectory_stationary_depth.py -v
+"""test_trajectory_stationary_depth.py - tests for trajectory_stationary_depth.py only.
 
-import importlib
+Covers: TrajectoryBuffer, StationaryDetector, DepthTrend, DepthTrendDetector, FingertipTrail.
+
+Run with:  python -m pytest tests/unit/test_trajectory_stationary_depth.py
+"""
+
 import random
 
+import pytest
 
-def _load_module():
-    """Find trajectory_stationary_depth whichever way the project is set up.
-
-    If none of these match your project, change the list (or replace this whole
-    function with a normal `from ... import ...` line).
-    """
-    names = (
-        "motion.trajectory_stationary_depth",       # src/ is the import root
-        "src.motion.trajectory_stationary_depth",   # the repo root is the import root
-        "trajectory_stationary_depth",              # test file sits next to the module
-    )
-    last_error = None
-    for name in names:
-        try:
-            return importlib.import_module(name)
-        except ImportError as error:
-            last_error = error
-    raise ImportError(f"could not import trajectory_stationary_depth, tried {names}") from last_error
-
-
-_m = _load_module()
-TrajectoryBuffer = _m.TrajectoryBuffer
-StationaryDetector = _m.StationaryDetector
-DepthTrend = _m.DepthTrend
-DepthTrendDetector = _m.DepthTrendDetector
-FingertipTrail = _m.FingertipTrail
+from src.motion.trajectory_stationary_depth import (
+    DepthTrend,
+    DepthTrendDetector,
+    FingertipTrail,
+    StationaryDetector,
+    TrajectoryBuffer,
+)
 
 
 # ---------------------------------------------------------------
@@ -39,6 +25,14 @@ def test_buffer_starts_empty():
     b = TrajectoryBuffer()
     assert len(b) == 0
     assert b.points() == []
+    assert b.last() is None
+
+
+def test_buffer_rejects_a_non_positive_maxlen():
+    with pytest.raises(ValueError, match="maxlen"):
+        TrajectoryBuffer(maxlen=0)
+    with pytest.raises(ValueError, match="maxlen"):
+        TrajectoryBuffer(maxlen=-1)
 
 
 def test_buffer_points_drop_the_timestamp_and_keep_oldest_first():
@@ -81,7 +75,17 @@ def test_buffer_points_returns_a_copy():
     b.append(1, 1, 0.0)
     pts = b.points()
     pts.append((99, 99))
-    assert b.points() == [(1, 1)]          # changing the returned list does not touch the buffer
+    assert b.points() == [
+        (1, 1)
+    ]  # changing the returned list does not touch the buffer
+
+
+def test_buffer_last_returns_the_most_recent_point():
+    b = TrajectoryBuffer()
+    b.append(10, 20, 0.0)
+    assert b.last() == (10, 20)
+    b.append(30, 40, 0.033)
+    assert b.last() == (30, 40)
 
 
 # ---------------------------------------------------------------
@@ -92,10 +96,12 @@ def test_stationary_starts_as_moving():
 
 
 def test_stationary_needs_min_frames_slow_frames_in_a_row():
-    d = StationaryDetector()                 # min_frames = 5
+    d = StationaryDetector()  # min_frames = 5
     for _ in range(4):
-        assert d.update(5, 200) is False     # 0.025 hand-sizes/s: slow, but not long enough
-    assert d.update(5, 200) is True          # 5th slow frame in a row
+        assert (
+            d.update(5, 200) is False
+        )  # 0.025 hand-sizes/s: slow, but not long enough
+    assert d.update(5, 200) is True  # 5th slow frame in a row
 
 
 def test_stationary_speed_is_judged_relative_to_hand_size():
@@ -112,9 +118,9 @@ def test_stationary_a_frame_between_the_thresholds_resets_the_streak_while_movin
     d = StationaryDetector()
     for _ in range(4):
         d.update(5, 200)
-    d.update(30, 200)                        # 0.15: between enter (0.10) and exit (0.25)
+    d.update(30, 200)  # 0.15: between enter (0.10) and exit (0.25)
     for _ in range(4):
-        assert d.update(5, 200) is False     # the streak started again from 0
+        assert d.update(5, 200) is False  # the streak started again from 0
     assert d.update(5, 200) is True
 
 
@@ -122,7 +128,7 @@ def test_stationary_a_fast_frame_resets_the_streak():
     d = StationaryDetector()
     for _ in range(4):
         d.update(5, 200)
-    d.update(100, 200)                       # 0.5: fast
+    d.update(100, 200)  # 0.5: fast
     for _ in range(4):
         assert d.update(5, 200) is False
     assert d.update(5, 200) is True
@@ -133,7 +139,7 @@ def test_stationary_hysteresis_keeps_the_state_between_the_thresholds():
     for _ in range(5):
         d.update(5, 200)
     assert d.stationary
-    for speed in (25, 30, 40, 49):           # 0.125 to 0.245 hand-sizes/s: in between
+    for speed in (25, 30, 40, 49):  # 0.125 to 0.245 hand-sizes/s: in between
         assert d.update(speed, 200) is True
 
 
@@ -141,8 +147,8 @@ def test_stationary_leaves_the_state_only_above_the_exit_threshold():
     d = StationaryDetector()
     for _ in range(5):
         d.update(5, 200)
-    assert d.update(60, 200) is False        # 0.30 > 0.25
-    for _ in range(4):                       # and it needs 5 slow frames again
+    assert d.update(60, 200) is False  # 0.30 > 0.25
+    for _ in range(4):  # and it needs 5 slow frames again
         assert d.update(5, 200) is False
     assert d.update(5, 200) is True
 
@@ -150,11 +156,11 @@ def test_stationary_leaves_the_state_only_above_the_exit_threshold():
 def test_stationary_thresholds_are_strict():
     d = StationaryDetector()
     for _ in range(10):
-        d.update(20, 200)                    # exactly 0.10: not below enter_thresh
+        d.update(20, 200)  # exactly 0.10: not below enter_thresh
     assert d.stationary is False
     for _ in range(5):
         d.update(5, 200)
-    assert d.update(50, 200) is True         # exactly 0.25: not above exit_thresh
+    assert d.update(50, 200) is True  # exactly 0.25: not above exit_thresh
 
 
 def test_stationary_bad_hand_size_keeps_the_previous_answer():
@@ -163,7 +169,7 @@ def test_stationary_bad_hand_size_keeps_the_previous_answer():
     assert d.update(5, -10) is False
     for _ in range(5):
         d.update(5, 200)
-    assert d.update(999, 0) is True          # a broken measurement cannot flip the state
+    assert d.update(999, 0) is True  # a broken measurement cannot flip the state
     assert d.update(999, -1) is True
 
 
@@ -180,10 +186,17 @@ def test_stationary_reset_goes_back_to_moving_and_forgets_the_streak():
 
 def test_stationary_custom_settings_are_used():
     d = StationaryDetector(enter_thresh=0.5, exit_thresh=1.0, min_frames=2)
-    d.update(50, 200)                        # 0.25 < 0.5
-    assert d.update(50, 200) is True         # only 2 frames needed
-    assert d.update(150, 200) is True        # 0.75: still below exit_thresh = 1.0
-    assert d.update(250, 200) is False       # 1.25 > 1.0
+    d.update(50, 200)  # 0.25 < 0.5
+    assert d.update(50, 200) is True  # only 2 frames needed
+    assert d.update(150, 200) is True  # 0.75: still below exit_thresh = 1.0
+    assert d.update(250, 200) is False  # 1.25 > 1.0
+
+
+def test_stationary_rejects_invalid_settings():
+    with pytest.raises(ValueError, match="enter_thresh"):
+        StationaryDetector(enter_thresh=0.5, exit_thresh=0.5)
+    with pytest.raises(ValueError, match="min_frames"):
+        StationaryDetector(min_frames=0)
 
 
 # ---------------------------------------------------------------
@@ -198,9 +211,9 @@ def test_depth_trend_has_three_distinct_values():
 # DepthTrendDetector
 # ---------------------------------------------------------------
 def test_depth_says_none_until_there_is_enough_history():
-    d, size = DepthTrendDetector(), 100.0    # window = 5, so 6 values are needed
+    d, size = DepthTrendDetector(), 100.0  # window = 5, so 6 values are needed
     for _ in range(5):
-        size *= 1.10                         # a very fast approach
+        size *= 1.10  # a very fast approach
         assert d.update(size) == DepthTrend.NONE
     size *= 1.10
     assert d.update(size) == DepthTrend.TOWARD
@@ -239,7 +252,7 @@ def test_depth_one_small_spike_is_smoothed_away():
     d = DepthTrendDetector()
     for _ in range(20):
         d.update(200.0)
-    results = [d.update(208.0)]              # +4% for ONE frame
+    results = [d.update(208.0)]  # +4% for ONE frame
     results += [d.update(200.0) for _ in range(10)]
     assert DepthTrend.TOWARD not in results
     assert DepthTrend.AWAY not in results
@@ -252,8 +265,8 @@ def test_depth_very_slow_drift_is_ignored_but_a_steady_approach_is_not():
         a *= 1.003
         b *= 1.01
         r_slow, r_steady = slow.update(a), steady.update(b)
-    assert r_slow == DepthTrend.NONE         # 0.3% per frame
-    assert r_steady == DepthTrend.TOWARD     # 1% per frame
+    assert r_slow == DepthTrend.NONE  # 0.3% per frame
+    assert r_steady == DepthTrend.TOWARD  # 1% per frame
 
 
 def test_depth_more_smoothing_reacts_later():
@@ -262,8 +275,8 @@ def test_depth_more_smoothing_reacts_later():
     for _ in range(6):
         r_fast, r_slow = fast.update(size), slow.update(size)
         size *= 1.01
-    assert r_fast == DepthTrend.TOWARD       # no smoothing: sees the full 5% growth
-    assert r_slow == DepthTrend.NONE         # heavy smoothing: still catching up
+    assert r_fast == DepthTrend.TOWARD  # no smoothing: sees the full 5% growth
+    assert r_slow == DepthTrend.NONE  # heavy smoothing: still catching up
 
 
 def test_depth_bad_measurements_are_ignored_and_do_not_change_the_state():
@@ -278,11 +291,11 @@ def test_depth_bad_measurements_are_ignored_and_do_not_change_the_state():
 
 
 def test_depth_first_frame_uses_the_size_as_it_is():
-    d = DepthTrendDetector(alpha=0.1)        # heavy smoothing must not drag the first value
+    d = DepthTrendDetector(alpha=0.1)  # heavy smoothing must not drag the first value
     d.update(200.0)
     for _ in range(5):
         r = d.update(200.0)
-    assert r == DepthTrend.NONE              # it would not be none if it had started from 0
+    assert r == DepthTrend.NONE  # it would not be none if it had started from 0
 
 
 def test_depth_reset_forgets_everything():
@@ -292,17 +305,26 @@ def test_depth_reset_forgets_everything():
         d.update(size)
     d.reset()
     for _ in range(5):
-        assert d.update(500.0) == DepthTrend.NONE    # history is empty again
-    assert d.update(500.0) == DepthTrend.NONE        # and 500 is taken as the first size
+        assert d.update(500.0) == DepthTrend.NONE  # history is empty again
+    assert d.update(500.0) == DepthTrend.NONE  # and 500 is taken as the first size
 
 
 def test_depth_spec_literal_rule_with_window_1_and_no_smoothing():
-    d = DepthTrendDetector(alpha=1.0, window=1)      # the literal spec rule
+    d = DepthTrendDetector(alpha=1.0, window=1)  # the literal spec rule
     assert d.update(100) == DepthTrend.NONE
-    assert d.update(103) == DepthTrend.TOWARD        # 1.03 > 1.02
-    assert d.update(104) == DepthTrend.NONE          # 1.0097
-    assert d.update(101) == DepthTrend.AWAY          # 0.971 < 0.98
-    assert d.update(100) == DepthTrend.NONE          # 0.990
+    assert d.update(103) == DepthTrend.TOWARD  # 1.03 > 1.02
+    assert d.update(104) == DepthTrend.NONE  # 1.0097
+    assert d.update(101) == DepthTrend.AWAY  # 0.971 < 0.98
+    assert d.update(100) == DepthTrend.NONE  # 0.990
+
+
+def test_depth_rejects_invalid_settings():
+    with pytest.raises(ValueError, match="alpha"):
+        DepthTrendDetector(alpha=0)
+    with pytest.raises(ValueError, match="window"):
+        DepthTrendDetector(window=0)
+    with pytest.raises(ValueError, match="ratio_thresh"):
+        DepthTrendDetector(ratio_thresh=1.0)
 
 
 # ---------------------------------------------------------------
@@ -328,10 +350,10 @@ def test_trail_missing_tip_is_not_recorded():
 
 
 def test_trail_keeps_the_drawing_through_a_pause_of_up_to_grace_frames():
-    f = FingertipTrail()                     # grace_frames = 3
+    f = FingertipTrail()  # grace_frames = 3
     f.update((1, 1), 0.0, True)
     for _ in range(3):
-        f.update(None, 0.1, False)           # exactly 3 frames without pointing
+        f.update(None, 0.1, False)  # exactly 3 frames without pointing
     assert f.update((2, 2), 0.2, True) == [(1, 1), (2, 2)]
 
 
@@ -340,7 +362,7 @@ def test_trail_a_longer_pause_starts_a_new_drawing():
     f.update((1, 1), 0.0, True)
     f.update((2, 2), 0.033, True)
     for _ in range(4):
-        f.update(None, 0.1, False)           # 4 frames: more than grace_frames
+        f.update(None, 0.1, False)  # 4 frames: more than grace_frames
     assert f.update((9, 9), 0.2, True) == [(9, 9)]
 
 
@@ -365,7 +387,7 @@ def test_trail_custom_size_and_grace_frames():
     for i in range(8):
         pts = f.update((i, 0), i * 0.033, True)
     assert pts == [(3, 0), (4, 0), (5, 0), (6, 0), (7, 0)]
-    f.update(None, 1.0, False)               # one missed frame is already a new drawing
+    f.update(None, 1.0, False)  # one missed frame is already a new drawing
     assert f.update((50, 50), 1.1, True) == [(50, 50)]
 
 
@@ -375,11 +397,3 @@ def test_trail_reset_clears_the_drawing():
     f.reset()
     assert f.update(None, 0.1, False) == []
     assert f.update((5, 5), 0.2, True) == [(5, 5)]
-
-
-if __name__ == "__main__":
-    tests = [(n, fn) for n, fn in sorted(globals().items()) if n.startswith("test_") and callable(fn)]
-    for name, fn in tests:
-        fn()
-        print("ok  ", name)
-    print(f"\nAll {len(tests)} tests passed.")
