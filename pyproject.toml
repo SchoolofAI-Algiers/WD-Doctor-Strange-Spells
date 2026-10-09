@@ -52,6 +52,7 @@ ignore = [
 ]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "T201"]  # allow assert in tests, print in tests
+"demos/*" = ["T201"]  # demo scripts print to the console
 
 [tool.ruff.format]
 quote-style = "double"
