@@ -25,7 +25,6 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
-
 from src.gestures.recognizer import (
     Gesture,
     GestureConfig,
@@ -40,7 +39,7 @@ from src.gestures.recognizer import (
     is_ruby,
     mirror_metrics,
 )
-from src.motion.Analyzer import MotionAnalyzer
+from src.motion.analyzer import MotionAnalyzer
 from src.rendering.spell_renderer import SPELL_FOR, SpellRenderer, to_active
 from src.rendering.spells import make_spells
 
@@ -67,7 +66,9 @@ def make_geometry(lm, w: int, h: int) -> SimpleNamespace:
     scale = float(max(w, h))
     center = pts[list(PALM_POINTS)].mean(axis=0)
     wrist, mid = pts[0], pts[9]
-    rigid = float(np.linalg.norm(mid - wrist))  # wrist -> middle knuckle, stays put when fingers curl
+    rigid = float(
+        np.linalg.norm(mid - wrist)
+    )  # wrist -> middle knuckle, stays put when fingers curl
     spread = float(np.mean(np.linalg.norm(pts - center, axis=1)))  # shrinks when the hand closes
     dx, dy = mid - wrist
     return SimpleNamespace(
@@ -123,7 +124,9 @@ def main() -> None:
 
     fast = GestureConfig(stability=StabilityConfig(enter_frames=2, confirm_frames=3, exit_frames=3))
     # Mirror is a short burst: 2 frames to turn on, stays on ~8 frames after
-    burst = GestureConfig(stability=StabilityConfig(enter_frames=1, confirm_frames=1, exit_frames=8))
+    burst = GestureConfig(
+        stability=StabilityConfig(enter_frames=1, confirm_frames=1, exit_frames=8)
+    )
     detectors = {
         "MIRROR": SpellDetector(lambda g, c: is_mirror(ctx), burst),
         "RUBY": SpellDetector(lambda g, c: is_ruby(ctx), fast),
@@ -183,8 +186,12 @@ def main() -> None:
             if spell_id is None:
                 continue
             t = renderer.compute_transform(
-                geo, to_active(g), motion.get(g.hand_id), anim_time,
-                hand_id=g.hand_id, spell_id=spell_id,
+                geo,
+                to_active(g),
+                motion.get(g.hand_id),
+                anim_time,
+                hand_id=g.hand_id,
+                spell_id=spell_id,
             )
             seen.add(g.hand_id)
             spells.append((t, g))
@@ -202,20 +209,39 @@ def main() -> None:
             put(frame, label, max(cx - 60, 5), max(cy - 90, 20), (0, 255, 255))
             m = motion.get(g.hand_id)
             if m is not None:
-                put(frame, f"{'still' if m.is_stationary else 'moving'} {m.depth_trend.name.lower()}",
-                    max(cx - 60, 5), max(cy - 70, 40), (200, 200, 200), 0.5)
+                put(
+                    frame,
+                    f"{'still' if m.is_stationary else 'moving'} {m.depth_trend.name.lower()}",
+                    max(cx - 60, 5),
+                    max(cy - 70, 40),
+                    (200, 200, 200),
+                    0.5,
+                )
             if SHOW_DEBUG:
                 raw = recognizer.raw.get(g.hand_id)
-                ext = ",".join(sorted(extended_fingers(geo.landmarks_norm, recognizer.config))) or "-"
-                put(frame, f"raw={raw.value if raw else '-'} ext={ext} size={geo.hand_size_norm:.2f}",
-                    max(cx - 60, 5), max(cy - 50, 60), (255, 200, 0), 0.5)
+                ext = (
+                    ",".join(sorted(extended_fingers(geo.landmarks_norm, recognizer.config))) or "-"
+                )
+                put(
+                    frame,
+                    f"raw={raw.value if raw else '-'} ext={ext} size={geo.hand_size_norm:.2f}",
+                    max(cx - 60, 5),
+                    max(cy - 50, 60),
+                    (255, 200, 0),
+                    0.5,
+                )
 
         put(frame, f"{1.0 / max(dt, 1e-6):.0f} fps", 10, 28, scale=0.8)
         y = 56
         for name in ("MIRROR", "RUBY", "PORTAL"):
             on = active.get(name, False)
-            put(frame, f"{name}: {'ACTIVE' if on else '-'}", 10, y,
-                (0, 255, 0) if on else (160, 160, 160))
+            put(
+                frame,
+                f"{name}: {'ACTIVE' if on else '-'}",
+                10,
+                y,
+                (0, 255, 0) if on else (160, 160, 160),
+            )
             y += 24
 
         if SHOW_DEBUG:
