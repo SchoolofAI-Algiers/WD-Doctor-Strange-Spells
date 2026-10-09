@@ -6,7 +6,6 @@ import time
 
 import cv2
 import numpy as np
-
 from src.geometry.calculator import HandGeometry
 from src.motion.analyzer import MotionAnalyzer, MotionState
 
@@ -47,7 +46,9 @@ def synthetic_hand(t: float):
     return center, size, tip, pointing
 
 
-def to_geometry(center: tuple[float, float], size: float, tip: tuple[float, float]) -> HandGeometry:
+def to_geometry(
+    center: tuple[float, float], size: float, tip: tuple[float, float]
+) -> HandGeometry:
     """The HandGeometry the real pipeline would give for this synthetic hand.
 
     The analyzer rebuilds the fingertip from landmarks_norm, so landmark 8 is
@@ -119,7 +120,15 @@ def draw(frame, hand_id: int, center, size, state: MotionState, pointing: bool) 
         tags.append(("POINTING", (0, 165, 255)))
     y = c[1] - int(size) - 12 - 22 * (len(tags) - 1)
     for text, col in tags:
-        cv2.putText(frame, text, (c[0] - 60, max(y, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2)
+        cv2.putText(
+            frame,
+            text,
+            (c[0] - 60, max(y, 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            col,
+            2,
+        )
         y += 22
     cv2.putText(
         frame,
@@ -163,7 +172,13 @@ def main() -> int:
         if not hands:
             analyzer.tick(dt)
         for hand_id, geometry, pointing in hands:
-            state = analyzer.update(hand_id, geometry, dt, is_pointing=pointing)
+            state = analyzer.update(
+                hand_id,
+                geometry,
+                dt,
+                tip_px=tip,
+                is_pointing=pointing,
+            )
             draw(
                 frame,
                 hand_id,

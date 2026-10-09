@@ -11,7 +11,6 @@ import math
 import random
 
 import pytest
-
 from src.motion.motion import (
     DepthTrend,
     DepthTrendDetector,
