@@ -221,11 +221,10 @@ class GestureRecognizer:
         for lost_id in [h for h in self._stabilizers if h >= len(geometries)]:
             del self._stabilizers[lost_id]
 
-        together = hands_together(geometries, self.config)
 
         states: list[GestureState] = []
         for hand_id, geometry in enumerate(geometries):
-            raw = Gesture.TWO_HANDS_TOGETHER if together else classify_hand(geometry, self.config)
+            raw = classify_hand(geometry, self.config)
             states.append(self._update_hand(hand_id, raw))
         return states
 
@@ -237,7 +236,7 @@ class GestureRecognizer:
 
         best: tuple[Gesture, PoseStatus] | None = None
         for gesture in Gesture:
-            if gesture is Gesture.NONE:
+            if gesture in (Gesture.NONE, Gesture.TWO_HANDS_TOGETHER):
                 continue
             if gesture not in stabilizers:
                 stabilizers[gesture] = PoseStabilizer(self.config.stability)
