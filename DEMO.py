@@ -34,6 +34,7 @@ from src.gestures.recognizer import (
     StabilityConfig,
     TwoHandContext,
     extended_fingers,
+    hand_ids_from_handedness,
     is_mirror,
     is_portal,
     is_ruby,
@@ -154,15 +155,14 @@ def main() -> None:
         last_ts = max(last_ts + 1, int(anim_time * 1000))  # must strictly increase
         res = tracker.detect_for_video(mp_img, last_ts)
 
-        # ---- geometry + ids (Left = 0, Right = 1) ----
+        # ---- geometry + handedness (Left = 0, Right = 1 via helper) ----
         geometries = [make_geometry(lm, w, h) for lm in res.hand_landmarks]
-        ids = [0 if hd[0].category_name == "Left" else 1 for hd in res.handedness]
-        if len(set(ids)) != len(ids):  # both hands got the same label: use list positions
-            ids = list(range(len(geometries)))
+        handedness = [hd[0].category_name for hd in res.handedness]
+        ids = hand_ids_from_handedness(len(geometries), handedness)
         by_id = dict(zip(ids, geometries, strict=True))
 
-        # ---- recognizer + motion ----
-        states = recognizer.update(geometries, ids)
+        # ---- recognizer + motion (same ids as the recognizer uses) ----
+        states = recognizer.update(geometries, handedness)
         motion = {}
         for hid, geo in zip(ids, geometries, strict=True):
             tip = (float(geo.landmarks[INDEX_TIP][0]), float(geo.landmarks[INDEX_TIP][1]))
