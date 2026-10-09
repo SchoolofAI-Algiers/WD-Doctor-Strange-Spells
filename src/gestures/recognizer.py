@@ -1,10 +1,17 @@
+from __future__ import annotations
+
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from src.geometry.calculator import FloatArray, HandGeometry, distance
+
+if TYPE_CHECKING:  # typing only, avoids a circular import
+    from src.motion.analyzer import MotionState
 
 
 class Gesture(Enum):
@@ -35,7 +42,7 @@ class StabilityConfig:
 
 @dataclass(frozen=True)
 class GestureConfig:
-    min_hand_size_norm: float = 0.05  # so we don't clsasify a non existing hand as a closed_fist
+    min_hand_size_norm: float = 0.05  # avoids classifying a non-existent hand as a closed fist
     thumb_threshold: float = 1.3
     finger_threshold: float = 1.5
     together_max_ratio: float = 1.0
@@ -85,9 +92,8 @@ def is_thumb_middle_pinch(geometry: HandGeometry, config: GestureConfig | None =
         return False
 
     lm = geometry.landmarks_norm
-    scale = distance(
-        lm[0], lm[9]
-    )  # the hand size will be incorrect because of the gesture so we need another way to calculate it
+    # hand size is distorted by the pose itself, so use wrist -> middle MCP as scale
+    scale = distance(lm[0], lm[9])
     if scale < 1e-6:
         return False
     return distance(lm[4], lm[12]) / scale < config.pinch_max_ratio
@@ -100,7 +106,7 @@ def classify_hand(geometry: HandGeometry, config: GestureConfig | None = None) -
         return Gesture.NONE
 
     fingers = extended_fingers(geometry.landmarks_norm, config)
-    others = fingers - {"thumb"}
+    others = fingers - {"thumb"}  # the thumb test is unreliable, so poses use the 4 fingers
 
     if not others:
         return Gesture.CLOSED_FIST
@@ -133,7 +139,7 @@ def hands_together(geometries: list[HandGeometry], config: GestureConfig | None 
 
 # The shield of seraphim
 def is_shield(geometries: list[HandGeometry], config: GestureConfig | None = None) -> bool:
-    if len(geometries) != 2:  # so that we have exactly 2 hands
+    if len(geometries) != 2:  # exactly 2 hands
         return False
 
     gestures = [classify_hand(geometry, config) for geometry in geometries]
@@ -230,6 +236,7 @@ class GestureRecognizer:
     def __init__(self, config: GestureConfig | None = None) -> None:
         self.config = config or GestureConfig()
         self._stabilizers: dict[int, dict[Gesture, PoseStabilizer]] = {}
+        self.raw: dict[int, Gesture] = {}  # raw pose per hand id, read by the two-hand spells
 
     def update(
         self, geometries: list[HandGeometry], handedness: list[str] | None = None
@@ -238,14 +245,17 @@ class GestureRecognizer:
         for lost_id in [h for h in self._stabilizers if h not in ids]:
             del self._stabilizers[lost_id]
 
+        self.raw = {}
         states: list[GestureState] = []
         for hand_id, geometry in zip(ids, geometries, strict=True):
             raw = classify_hand(geometry, self.config)
+            self.raw[hand_id] = raw
             states.append(self._update_hand(hand_id, raw))
         return states
 
     def reset(self) -> None:
         self._stabilizers.clear()
+        self.raw = {}
 
     def _update_hand(self, hand_id: int, raw: Gesture) -> GestureState:
         stabilizers = self._stabilizers.setdefault(hand_id, {})
@@ -283,3 +293,110 @@ class SpellDetector:
 
     def reset(self) -> None:
         self._stabilizer.reset()
+
+
+class TwoHandContext:
+    def __init__(self, config: GestureConfig | None = None) -> None:
+        self.config = config or GestureConfig()
+        # Reuses PoseStabilizer with the default config: 3 + 5 = 8 frames to confirm TOGETHER.
+        self._together = PoseStabilizer(self.config.stability)
+        self.t = 0.0
+        self.together_now = False
+        self.together_seen_t = -math.inf     # history: last time the hands were close (clap burst)
+        self.together_active_t = -math.inf   # last time TOGETHER was confirmed (8 frames)
+        self.mirror_t = -math.inf            # last time Mirror was detected (Ruby exclusion)
+        self.geom: dict[int, HandGeometry] = {}
+        self.pose: dict[int, Gesture] = {}
+        self.motion: dict[int, MotionState] = {}
+
+    def observe(
+        self,
+        t: float,
+        geom: dict[int, HandGeometry],
+        pose: dict[int, Gesture],
+        motion: dict[int, MotionState],
+    ) -> None:
+        self.t, self.geom, self.pose, self.motion = t, geom, pose, motion
+        self.together_now = hands_together(list(geom.values()), self.config)
+        if self.together_now:
+            self.together_seen_t = t
+        if self._together.update(self.together_now).state is PoseState.ACTIVE:
+            self.together_active_t = t
+        if is_mirror(self):  # remember Mirror so Ruby doesn't fire right after it
+            self.mirror_t = t
+
+    def both(self) -> bool:
+        return all(i in self.geom and i in self.motion and i in self.pose for i in (0, 1))
+
+
+# Mirror Dimension
+# TOGETHER (8 frames) -> distance growing + vx of opposite signs + vy small
+MIRROR_WINDOW = 0.8      # s after a confirmed TOGETHER during which the pull can start
+MIRROR_MIN_APART = 0.8   # hand-sizes per second the distance must grow
+
+
+def mirror_metrics(ctx: TwoHandContext) -> tuple[float, bool, bool] | None:
+    """(apart speed, opposite x directions, mostly horizontal) - also used for the on-screen debug."""
+    if not ctx.both():
+        return None
+    a, b = ctx.geom[0], ctx.geom[1]
+    va, vb = ctx.motion[0].velocity_px_s, ctx.motion[1].velocity_px_s
+    size = (a.hand_size_px + b.hand_size_px) / 2
+    if size < 1e-6:
+        return None
+    ux = b.palm_center_px[0] - a.palm_center_px[0]
+    uy = b.palm_center_px[1] - a.palm_center_px[1]
+    n = math.hypot(ux, uy) or 1.0
+    apart = ((vb[0] - va[0]) * ux + (vb[1] - va[1]) * uy) / n / size   # hand-sizes/s
+    opposite = va[0] * vb[0] < 0
+    horizontal = all(abs(v[1]) < 0.6 * abs(v[0]) for v in (va, vb))
+    return apart, opposite, horizontal
+
+
+def is_mirror(ctx: TwoHandContext) -> bool:
+    if ctx.t - ctx.together_active_t > MIRROR_WINDOW:   # TOGETHER must have just ended
+        return False
+    m = mirror_metrics(ctx)
+    if m is None:
+        return False
+    apart, opposite, horizontal = m
+    return apart > MIRROR_MIN_APART and opposite and horizontal
+
+
+# Ruby Rings
+# together burst (history) -> both hands OPEN_PALM within < 1 s
+RUBY_CLAP_WINDOW = 1.0       # s: the clap must have happened less than this ago
+RUBY_MIRROR_COOLDOWN = 1.5   # s: no Ruby right after a Mirror (same hand motion)
+
+
+def is_ruby(ctx: TwoHandContext) -> bool:
+    return (
+        ctx.both()
+        and not ctx.together_now
+        and ctx.t - ctx.together_seen_t < RUBY_CLAP_WINDOW
+        and ctx.t - ctx.mirror_t > RUBY_MIRROR_COOLDOWN
+        and ctx.pose[0] is Gesture.OPEN_PALM
+        and ctx.pose[1] is Gesture.OPEN_PALM
+    )
+
+
+# Dr Strange Portal
+# 1 hand PEACE and stationary + the other hand moving faster than the threshold
+# (rotation cut: approximation)
+PORTAL_MIN_SPEED = 1.0   # hand-sizes/s
+
+
+def is_portal(ctx: TwoHandContext) -> bool:
+    if not ctx.both():
+        return False
+    for peace, mover in ((0, 1), (1, 0)):
+        size = ctx.geom[mover].hand_size_px
+        if size < 1e-6:  # avoids ZeroDivisionError
+            continue
+        if (
+            ctx.pose[peace] is Gesture.PEACE
+            and ctx.motion[peace].is_stationary
+            and ctx.motion[mover].speed_px_s / size > PORTAL_MIN_SPEED
+        ):
+            return True
+    return False
