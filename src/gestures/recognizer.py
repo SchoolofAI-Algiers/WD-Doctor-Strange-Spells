@@ -1,10 +1,18 @@
+
+from __future__ import annotations
+
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from src.geometry.calculator import FloatArray, HandGeometry, distance
+
+if TYPE_CHECKING:  # typing only, avoids a circular import
+    from src.motion.Analyzer import MotionState   # adjust to your actual module path
 
 
 class Gesture(Enum):
@@ -100,20 +108,20 @@ def classify_hand(geometry: HandGeometry, config: GestureConfig | None = None) -
         return Gesture.NONE
 
     fingers = extended_fingers(geometry.landmarks_norm, config)
+    others = fingers - {"thumb"}  # the thumb test is unreliable, so poses use the 4 fingers
 
-    if not fingers:
+    if not others:
         return Gesture.CLOSED_FIST
     if fingers >= {"index", "ring", "pinky"} and is_thumb_middle_pinch(geometry, config):
         return Gesture.THUMB_MIDDLE_PINCH
-    if len(fingers) == len(FINGERS):
+    if len(others) == 4:
         return Gesture.OPEN_PALM
-    if fingers == frozenset({"index"}):
+    if others == frozenset({"index"}):
         return Gesture.POINTING
-    if fingers == frozenset({"index", "middle"}):
+    if others == frozenset({"index", "middle"}):
         return Gesture.PEACE
 
     return Gesture.NONE
-
 
 # Two hands gesture
 def hands_together(geometries: list[HandGeometry], config: GestureConfig | None = None) -> bool:
@@ -216,28 +224,36 @@ class GestureRecognizer:
     def __init__(self, config: GestureConfig | None = None) -> None:
         self.config = config or GestureConfig()
         self._stabilizers: dict[int, dict[Gesture, PoseStabilizer]] = {}
+        self.raw: dict[int, Gesture] = {}  # raw pose per hand id, read by the two-hand spells
 
-    def update(self, geometries: list[HandGeometry]) -> list[GestureState]:
-        for lost_id in [h for h in self._stabilizers if h >= len(geometries)]:
-            del self._stabilizers[lost_id]
+    def update(
+        self, geometries: list[HandGeometry], hand_ids: list[int] | None = None
+    ) -> list[GestureState]:
+        ids = list(hand_ids) if hand_ids is not None else list(range(len(geometries)))
+        if len(set(ids)) != len(ids):  # tracker gave both hands the same label: fall back
+            ids = list(range(len(geometries)))
 
-        together = hands_together(geometries, self.config)
+        for lost in [h for h in self._stabilizers if h not in ids]:  # was: h >= len(geometries)
+            del self._stabilizers[lost]
 
+        self.raw = {}
         states: list[GestureState] = []
-        for hand_id, geometry in enumerate(geometries):
-            raw = Gesture.TWO_HANDS_TOGETHER if together else classify_hand(geometry, self.config)
+        for hand_id, geometry in zip(ids, geometries, strict=True):
+            raw = classify_hand(geometry, self.config)  # no longer replaced by TOGETHER
+            self.raw[hand_id] = raw
             states.append(self._update_hand(hand_id, raw))
         return states
 
     def reset(self) -> None:
         self._stabilizers.clear()
+        self.raw = {}
 
     def _update_hand(self, hand_id: int, raw: Gesture) -> GestureState:
         stabilizers = self._stabilizers.setdefault(hand_id, {})
 
         best: tuple[Gesture, PoseStatus] | None = None
         for gesture in Gesture:
-            if gesture is Gesture.NONE:
+            if gesture in (Gesture.NONE, Gesture.TWO_HANDS_TOGETHER):  # was: only NONE
                 continue
             if gesture not in stabilizers:
                 stabilizers[gesture] = PoseStabilizer(self.config.stability)
@@ -268,3 +284,83 @@ class SpellDetector:
 
     def reset(self) -> None:
         self._stabilizer.reset()
+
+
+class TwoHandContext:
+    def __init__(self, config: GestureConfig | None = None) -> None:
+        self.config = config or GestureConfig()
+        self._together = PoseStabilizer(self.config.stability)
+        self.t = 0.0
+        self.together_now = False
+        self.together_seen_t = -math.inf     # last time the hands were close
+        self.together_active_t = -math.inf   # last time TOGETHER was confirmed
+        self.geom: dict[int, HandGeometry] = {}
+        self.pose: dict[int, Gesture] = {}
+        self.motion: dict[int, MotionState] = {}
+
+    def observe(self, t, geom, pose, motion) -> None:
+        self.t, self.geom, self.pose, self.motion = t, geom, pose, motion
+        self.together_now = hands_together(list(geom.values()), self.config)
+        if self.together_now:
+            self.together_seen_t = t
+        if self._together.update(self.together_now).state is PoseState.ACTIVE:
+            self.together_active_t = t
+
+    def both(self) -> bool:
+        return all(i in self.geom and i in self.motion and i in self.pose for i in (0, 1))
+
+
+MIRROR_WINDOW = 0.8      # s after a confirmed TOGETHER during which the pull can start
+MIRROR_MIN_APART = 0.8   # hand-sizes per second the distance must grow
+
+
+def mirror_metrics(ctx: TwoHandContext) -> tuple[float, bool, bool] | None:
+    """(apart speed, opposite x directions, mostly horizontal) - also used for the on-screen debug."""
+    if not ctx.both():
+        return None
+    a, b = ctx.geom[0], ctx.geom[1]
+    va, vb = ctx.motion[0].velocity_px_s, ctx.motion[1].velocity_px_s
+    size = (a.hand_size_px + b.hand_size_px) / 2
+    if size < 1e-6:
+        return None
+    ux = b.palm_center_px[0] - a.palm_center_px[0]
+    uy = b.palm_center_px[1] - a.palm_center_px[1]
+    n = math.hypot(ux, uy) or 1.0
+    apart = ((vb[0] - va[0]) * ux + (vb[1] - va[1]) * uy) / n / size   # hand-sizes/s
+    opposite = va[0] * vb[0] < 0
+    horizontal = all(abs(v[1]) < 0.6 * abs(v[0]) for v in (va, vb))
+    return apart, opposite, horizontal
+
+
+def is_mirror(ctx: TwoHandContext) -> bool:
+    if ctx.t - ctx.together_active_t > MIRROR_WINDOW:   # TOGETHER must have just ended
+        return False
+    m = mirror_metrics(ctx)
+    if m is None:
+        return False
+    apart, opposite, horizontal = m
+    return apart > MIRROR_MIN_APART and opposite and horizontal
+
+
+def is_ruby(ctx: TwoHandContext) -> bool:
+    return (
+        ctx.both()
+        and not ctx.together_now
+        and ctx.t - ctx.together_seen_t < 1.0
+        and ctx.pose[0] is Gesture.OPEN_PALM
+        and ctx.pose[1] is Gesture.OPEN_PALM
+    )
+
+
+def is_portal(ctx: TwoHandContext) -> bool:
+    if not ctx.both():
+        return False
+    for fist, mover in ((0, 1), (1, 0)):
+        size = ctx.geom[mover].hand_size_px
+        if (
+            ctx.pose[fist] is Gesture.CLOSED_FIST
+            and ctx.motion[fist].is_stationary
+            and ctx.motion[mover].speed_px_s / size > 1.0
+        ):
+            return True
+    return False
