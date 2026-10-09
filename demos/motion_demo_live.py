@@ -25,8 +25,12 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 import time
 from itertools import pairwise
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cv2
 import numpy as np
@@ -190,6 +194,7 @@ def draw_help(frame: np.ndarray, fps: float, paused: bool) -> None:
 
 
 # Main loop
+
 
 def run(args: argparse.Namespace, capture: Capture, tracker: HandTracker) -> int:
     analyzer = MotionAnalyzer()

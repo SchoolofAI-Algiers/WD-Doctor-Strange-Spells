@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cv2
 import numpy as np
@@ -46,9 +50,7 @@ def synthetic_hand(t: float):
     return center, size, tip, pointing
 
 
-def to_geometry(
-    center: tuple[float, float], size: float, tip: tuple[float, float]
-) -> HandGeometry:
+def to_geometry(center: tuple[float, float], size: float, tip: tuple[float, float]) -> HandGeometry:
     """The HandGeometry the real pipeline would give for this synthetic hand.
 
     The analyzer rebuilds the fingertip from landmarks_norm, so landmark 8 is
@@ -74,7 +76,6 @@ def to_geometry(
 
 class WebcamHands:
     def __init__(self) -> None:
-
         raise NotImplementedError("webcam mode: Capture/Tracker wiring not written yet")
 
     def read(self):
