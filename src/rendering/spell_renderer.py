@@ -1,18 +1,34 @@
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, replace
+
 import cv2
 import numpy as np
-import math
-from enum import Enum
-from dataclasses import replace
+
+from src.gestures.recognizer import Gesture, PoseState
+from src.gestures.recognizer import GestureState as RecognizedGesture
 
 ASSET_SIZE = 512
 ASSET_RADIUS = 256
 _ASSET_CACHE: dict[tuple, np.ndarray] = {}
 
+SPELL_FOR: dict[Gesture, str] = {      # recognized gesture -> spell id in make_spells()
+    Gesture.OPEN_PALM: "shield",
+}
 
-class GestureState(Enum):      # TEMP: replace with the gesture team's enum when it is ready
-    IDLE = 0
-    ACTIVE = 1
+
+@dataclass
+class ActiveGesture:
+    state: PoseState
+    confidence: float
+
+
+def to_active(g: RecognizedGesture) -> ActiveGesture:
+    on = g.gesture in SPELL_FOR and g.frames_held > 0
+    return ActiveGesture(
+        state=PoseState.ACTIVE if on else PoseState.IDLE,
+        confidence=g.confidence if on else 0.0,
+    )
+
 
 
 @dataclass
@@ -88,7 +104,7 @@ class SpellRenderer:
         self._M = np.zeros((2, 3), np.float64)
 
     def _is_active(self, gesture) -> bool:
-        return gesture.state == GestureState.ACTIVE
+        return gesture.state == PoseState.ACTIVE
 
     def compute_transform(self, geometry, gesture, motion, animation_time: float,
                           hand_id: int = 0, spell_id: str = "default") -> SpellTransform:
@@ -190,7 +206,7 @@ class SpellRenderer:
         hand_rot = transform.rotation_rad
         cos_h, sin_h = math.cos(hand_rot), math.sin(hand_rot)
 
-        for layer, asset in zip(cfg.layers, assets):
+        for layer, asset in zip(cfg.layers, assets, strict=True):
             # the offset is rotated with the hand, so "in front of the palm" stays in front
             ox = (layer.offset[0] * cos_h - layer.offset[1] * sin_h) * base_r
             oy = (layer.offset[0] * sin_h + layer.offset[1] * cos_h) * base_r

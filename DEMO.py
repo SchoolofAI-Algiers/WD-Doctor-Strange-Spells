@@ -16,8 +16,9 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
-from rendering.spell_renderer import GestureState, SpellRenderer
-from rendering.spells import make_spells
+from src.gestures.recognizer import PoseState
+from src.rendering.spell_renderer import SpellRenderer
+from src.rendering.spells import make_spells
 
 CAM_INDEX = 0
 SHOW_CENTER = True  # draw a dot on the palm center
@@ -53,7 +54,7 @@ def build_gesture(lm, score: float) -> SimpleNamespace:
         return math.hypot(lm[i].x - lm[0].x, lm[i].y - lm[0].y)
 
     extended = sum(d(tip) > d(pip) for tip, pip in FINGERS)
-    state = GestureState.ACTIVE if extended >= 3 else GestureState.IDLE
+    state = PoseState.ACTIVE if extended >= 3 else PoseState.IDLE
     return SimpleNamespace(state=state, confidence=score)
 
 
