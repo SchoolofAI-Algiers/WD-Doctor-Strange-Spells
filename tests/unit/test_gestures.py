@@ -17,16 +17,19 @@ from src.gestures.recognizer import (
     GestureRecognizer,
     PoseStabilizer,
     PoseState,
-    ShieldDetector,
+    SpellDetector,
     StabilityConfig,
     classify_hand,
     extended_fingers,
     hands_together,
+    is_ikkon,
     is_shield,
+    is_thumb_middle_pinch,
 )
 
 IMAGE_W, IMAGE_H = 640, 480
 ALL_FINGERS = ("thumb", "index", "middle", "ring", "pinky")
+PINCH_FINGERS = ("index", "ring", "pinky")  # fingers that stay straight in a thumb-middle pinch
 
 # (first landmark index of the finger, x position of the finger column)
 _FINGER_COLUMNS = {
@@ -38,13 +41,12 @@ _FINGER_COLUMNS = {
 
 
 # Synthetic hand builders
-
-
-def make_landmarks(extended: Iterable[str]) -> FloatArray:
+def make_landmarks(extended: Iterable[str], *, pinch: bool = False) -> FloatArray:
     """Build 21 wrist-centered landmarks where only `extended` fingers are straight.
 
     Straight finger: tip is far from the MCP (ratio ~2.5 for fingers, ~2 for the thumb).
     Curled finger: tip folds back close to the MCP (ratio well below the thresholds).
+    With `pinch=True`, the thumb tip and the middle tip touch each other.
     """
     ext = set(extended)
     lm = np.zeros((21, 2), dtype=np.float64)
@@ -62,6 +64,10 @@ def make_landmarks(extended: Iterable[str]) -> FloatArray:
         lm[first + 1] = (x, -0.60)
         lm[first + 2] = (x, -0.75)
         lm[first + 3] = (x, tip_y)
+
+    if pinch:
+        lm[4] = (-0.05, -0.50)  # thumb tip
+        lm[12] = (-0.03, -0.50)  # middle tip, ~0.02 away (ratio ~0.05 of the palm length)
     return lm
 
 
@@ -71,15 +77,25 @@ def make_geometry(
     center: tuple[float, float] = (320.0, 240.0),
     size_px: float = 100.0,
     scale: float = 1.0,
+    pinch: bool = False,
+    angle_deg: float = 0.0,
 ) -> HandGeometry:
-    """Build a HandGeometry for a hand with the given extended fingers."""
+    """Build a HandGeometry for a hand with the given extended fingers.
+
+    `angle_deg` rotates the hand in the image plane (0 = fingers pointing up).
+    """
+    landmarks = make_landmarks(extended, pinch=pinch) * scale
+    if angle_deg:
+        theta = np.radians(angle_deg)
+        rot = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+        landmarks = landmarks @ rot.T
     return HandGeometry(
         palm_center_px=center,
         palm_center_norm=(center[0] / IMAGE_W, center[1] / IMAGE_H),
         hand_size_px=size_px,
         hand_size_norm=size_px / max(IMAGE_W, IMAGE_H),
         palm_angle_rad=0.0,
-        landmarks_norm=make_landmarks(extended) * scale,
+        landmarks_norm=landmarks,
     )
 
 
@@ -87,8 +103,8 @@ LEFT = (150.0, 240.0)
 RIGHT = (500.0, 240.0)
 
 
-def palm(center: tuple[float, float] = LEFT) -> HandGeometry:
-    return make_geometry(ALL_FINGERS, center=center)
+def palm(center: tuple[float, float] = LEFT, angle_deg: float = 0.0) -> HandGeometry:
+    return make_geometry(ALL_FINGERS, center=center, angle_deg=angle_deg)
 
 
 def fist(center: tuple[float, float] = LEFT) -> HandGeometry:
@@ -99,9 +115,18 @@ def pointing(center: tuple[float, float] = LEFT) -> HandGeometry:
     return make_geometry(("index",), center=center)
 
 
+def pinch_hand(center: tuple[float, float] = LEFT, angle_deg: float = 0.0) -> HandGeometry:
+    return make_geometry(PINCH_FINGERS, center=center, pinch=True, angle_deg=angle_deg)
+
+
 def far_pair(a: HandGeometry, b: HandGeometry) -> list[HandGeometry]:
     """Two hands far apart (not 'together')."""
     return [a, b]
+
+
+def close_pair() -> list[HandGeometry]:
+    """Two pinch hands almost touching (20px apart, hand size 100px)."""
+    return [pinch_hand((310.0, 240.0)), pinch_hand((330.0, 240.0))]
 
 
 def feed_recognizer(
@@ -119,8 +144,6 @@ def activate(stabilizer: PoseStabilizer) -> None:
 
 
 # Defaults match gestures.md
-
-
 def test_default_stability_matches_spec() -> None:
     cfg = StabilityConfig()
     assert (cfg.enter_frames, cfg.confirm_frames, cfg.exit_frames) == (3, 5, 3)
@@ -131,6 +154,12 @@ def test_default_thresholds_match_spec() -> None:
     cfg = GestureConfig()
     assert cfg.thumb_threshold == pytest.approx(1.3)
     assert cfg.finger_threshold == pytest.approx(1.5)
+
+
+def test_default_spell_thresholds() -> None:
+    cfg = GestureConfig()
+    assert cfg.together_max_ratio == pytest.approx(1.0)
+    assert cfg.pinch_max_ratio == pytest.approx(0.3)
 
 
 def test_finger_landmark_indices_match_spec() -> None:
@@ -145,8 +174,6 @@ def test_finger_landmark_indices_match_spec() -> None:
 
 
 # Single-hand classification
-
-
 @pytest.mark.parametrize(
     ("extended", "expected"),
     [
@@ -154,7 +181,7 @@ def test_finger_landmark_indices_match_spec() -> None:
         (ALL_FINGERS, Gesture.OPEN_PALM),
         (("index",), Gesture.POINTING),
         (("index", "middle"), Gesture.PEACE),
-        (("thumb",), Gesture.THUMBS_UP),
+        (("thumb",), Gesture.NONE),  # THUMBS_UP no longer exists
         (("ring",), Gesture.NONE),
         (("thumb", "index"), Gesture.NONE),
         (("index", "middle", "ring"), Gesture.NONE),
@@ -178,6 +205,16 @@ def test_classification_is_scale_invariant() -> None:
     for scale in (0.2, 1.0, 5.0):
         assert classify_hand(make_geometry(ALL_FINGERS, scale=scale)) is Gesture.OPEN_PALM
         assert classify_hand(make_geometry((), scale=scale)) is Gesture.CLOSED_FIST
+        assert classify_hand(make_geometry(PINCH_FINGERS, pinch=True, scale=scale)) is (
+            Gesture.THUMB_MIDDLE_PINCH
+        )
+
+
+@pytest.mark.parametrize("angle", [0.0, 45.0, 90.0, 180.0, -135.0])
+def test_classification_is_rotation_invariant(angle: float) -> None:
+    assert classify_hand(make_geometry(ALL_FINGERS, angle_deg=angle)) is Gesture.OPEN_PALM
+    assert classify_hand(make_geometry((), angle_deg=angle)) is Gesture.CLOSED_FIST
+    assert classify_hand(pinch_hand(angle_deg=angle)) is Gesture.THUMB_MIDDLE_PINCH
 
 
 def test_tiny_hand_is_none_not_fist() -> None:
@@ -201,9 +238,46 @@ def test_min_hand_size_is_configurable() -> None:
     assert classify_hand(make_geometry((), size_px=5.0), permissive) is Gesture.CLOSED_FIST
 
 
+# Thumb-middle pinch
+def test_pinch_hand_is_classified_as_pinch() -> None:
+    assert classify_hand(pinch_hand()) is Gesture.THUMB_MIDDLE_PINCH
+
+
+def test_open_palm_is_not_a_pinch() -> None:
+    # All five fingers straight, thumb far from the middle tip: palm wins.
+    assert not is_thumb_middle_pinch(palm())
+    assert classify_hand(palm()) is Gesture.OPEN_PALM
+
+
+def test_pinch_requires_index_ring_and_pinky_extended() -> None:
+    # Tips touch, but the index is curled: not an Ikkon pinch.
+    hand = make_geometry(("ring", "pinky"), pinch=True)
+    assert is_thumb_middle_pinch(hand)  # the raw distance test still passes
+    assert classify_hand(hand) is Gesture.NONE
+
+
+def test_pinch_distance_threshold_is_configurable() -> None:
+    strict = GestureConfig(pinch_max_ratio=0.01)  # the synthetic pinch is ~0.05
+    assert not is_thumb_middle_pinch(pinch_hand(), strict)
+    assert classify_hand(pinch_hand(), strict) is Gesture.NONE
+
+
+def test_pinch_rejects_tiny_ghost_hand() -> None:
+    ghost = make_geometry(PINCH_FINGERS, pinch=True, size_px=5.0)
+    assert not is_thumb_middle_pinch(ghost)
+
+
+def test_pinch_rejects_degenerate_landmarks() -> None:
+    # All landmarks on the wrist: palm length is zero, nothing to compare against.
+    flat = make_geometry(PINCH_FINGERS, pinch=True, scale=0.0)
+    assert not is_thumb_middle_pinch(flat)
+
+
+def test_pinch_uses_default_config_when_none_given() -> None:
+    assert is_thumb_middle_pinch(pinch_hand(), None)
+
+
 # Two-hand gestures
-
-
 def test_hands_together_when_close() -> None:
     hands = [palm((300.0, 240.0)), palm((350.0, 240.0))]  # 50px apart, size 100px
     assert hands_together(hands)
@@ -250,8 +324,6 @@ def test_together_threshold_is_configurable() -> None:
 
 
 # The shield of Seraphim
-
-
 def test_shield_two_open_palms() -> None:
     assert is_shield(far_pair(palm(LEFT), palm(RIGHT)))
 
@@ -268,6 +340,10 @@ def test_shield_rejects_other_gestures() -> None:
     assert not is_shield(far_pair(pointing(LEFT), pointing(RIGHT)))
 
 
+def test_shield_rejects_pinch_hands() -> None:
+    assert not is_shield(far_pair(pinch_hand(LEFT), pinch_hand(RIGHT)))
+
+
 @pytest.mark.parametrize("count", [0, 1, 3])
 def test_shield_needs_exactly_two_hands(count: int) -> None:
     assert not is_shield([palm(LEFT) for _ in range(count)])
@@ -281,9 +357,54 @@ def test_shield_rejects_tiny_ghost_hands() -> None:
     assert not is_shield(ghosts)
 
 
+# The images of Ikkon
+def test_ikkon_two_pinch_hands() -> None:
+    assert is_ikkon(far_pair(pinch_hand(LEFT), pinch_hand(RIGHT)))
+
+
+@pytest.mark.parametrize(
+    "hands",
+    [
+        far_pair(pinch_hand(LEFT), palm(RIGHT)),
+        far_pair(pinch_hand(LEFT), fist(RIGHT)),
+        far_pair(palm(LEFT), palm(RIGHT)),
+        far_pair(fist(LEFT), fist(RIGHT)),
+    ],
+)
+def test_ikkon_rejects_non_pinch_hands(hands: list[HandGeometry]) -> None:
+    assert not is_ikkon(hands)
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+def test_ikkon_needs_exactly_two_hands(count: int) -> None:
+    assert not is_ikkon([pinch_hand(LEFT) for _ in range(count)])
+
+
+def test_ikkon_does_not_depend_on_hand_distance() -> None:
+    assert is_ikkon(close_pair())
+    assert is_ikkon(far_pair(pinch_hand(LEFT), pinch_hand(RIGHT)))
+
+
+@pytest.mark.parametrize("angle", [0.0, 45.0, -90.0, 180.0])
+def test_ikkon_does_not_depend_on_hand_rotation(angle: float) -> None:
+    hands = far_pair(pinch_hand(LEFT, angle), pinch_hand(RIGHT, -angle))
+    assert is_ikkon(hands)
+
+
+def test_ikkon_rejects_tiny_ghost_hands() -> None:
+    ghosts = [
+        make_geometry(PINCH_FINGERS, pinch=True, size_px=5.0, center=LEFT),
+        make_geometry(PINCH_FINGERS, pinch=True, size_px=5.0, center=RIGHT),
+    ]
+    assert not is_ikkon(ghosts)
+
+
+def test_ikkon_uses_config_pinch_threshold() -> None:
+    strict = GestureConfig(pinch_max_ratio=0.01)  # the synthetic pinch is ~0.05
+    assert not is_ikkon(far_pair(pinch_hand(LEFT), pinch_hand(RIGHT)), strict)
+
+
 # PoseStabilizer (state machine)
-
-
 def test_stabilizer_starts_idle() -> None:
     status = PoseStabilizer().update(False)
     assert status.state is PoseState.IDLE
@@ -391,9 +512,7 @@ def test_stabilizer_custom_config() -> None:
     assert stab.update(False).state is PoseState.IDLE
 
 
-# Flicker resistance (property-style, deterministic seeds)
-
-
+# Flicker resistance
 def test_flicker_alternating_never_activates() -> None:
     stab = PoseStabilizer()
     for i in range(200):
@@ -428,8 +547,6 @@ def test_flicker_random_dropouts_shorter_than_exit_never_deactivate() -> None:
 
 
 # GestureRecognizer
-
-
 def test_recognizer_no_hands_returns_empty_list() -> None:
     assert GestureRecognizer().update([]) == []
 
@@ -540,48 +657,96 @@ def test_recognizer_custom_stability_config() -> None:
     assert history[1][0] is Gesture.OPEN_PALM
 
 
-# ShieldDetector
+def test_recognizer_reports_pinch_on_each_hand() -> None:
+    rec = GestureRecognizer()
+    frame = far_pair(pinch_hand(LEFT), pinch_hand(RIGHT))
+    history = feed_recognizer(rec, frame, 8)
+    assert history[-1] == [Gesture.THUMB_MIDDLE_PINCH, Gesture.THUMB_MIDDLE_PINCH]
 
 
-def run_shield(det: ShieldDetector, frame: list[HandGeometry], n: int) -> PoseState:
+def test_recognizer_reports_together_instead_of_pinch_when_hands_touch() -> None:
+    # Documented behaviour: TWO_HANDS_TOGETHER overrides single-hand gestures.
+    # Spell detectors (is_ikkon, ...) are not affected: they read the raw geometries.
+    rec = GestureRecognizer()
+    history = feed_recognizer(rec, close_pair(), 8)
+    assert history[-1] == [Gesture.TWO_HANDS_TOGETHER, Gesture.TWO_HANDS_TOGETHER]
+
+
+# SpellDetector (stabilised spells)
+def run_spell(det: SpellDetector, frame: list[HandGeometry], n: int) -> PoseState:
     status = det.update(frame)
     for _ in range(n - 1):
         status = det.update(frame)
     return status.state
 
 
+def test_spell_detector_uses_default_config() -> None:
+    assert SpellDetector(is_shield).config == GestureConfig()
+
+
+def test_spell_detector_passes_geometries_and_config_to_predicate() -> None:
+    calls: list[tuple[list[HandGeometry], GestureConfig]] = []
+
+    def predicate(geometries: list[HandGeometry], config: GestureConfig) -> bool:
+        calls.append((geometries, config))
+        return True
+
+    cfg = GestureConfig(together_max_ratio=2.0)
+    frame = [palm()]
+    SpellDetector(predicate, cfg).update(frame)
+    assert len(calls) == 1
+    assert calls[0][0] is frame
+    assert calls[0][1] is cfg
+
+
+def test_spell_detector_accepts_any_predicate() -> None:
+    always = SpellDetector(lambda geometries, config: True)
+    assert run_spell(always, [], 8) is PoseState.ACTIVE
+
+
+def test_spell_detector_respects_custom_stability() -> None:
+    cfg = GestureConfig(stability=StabilityConfig(enter_frames=1, confirm_frames=1))
+    det = SpellDetector(is_shield, cfg)
+    assert run_spell(det, far_pair(palm(LEFT), palm(RIGHT)), 2) is PoseState.ACTIVE
+
+
+# Shield through SpellDetector
 def test_shield_detector_activates_with_two_palms() -> None:
-    assert run_shield(ShieldDetector(), far_pair(palm(LEFT), palm(RIGHT)), 8) is PoseState.ACTIVE
+    det = SpellDetector(is_shield)
+    assert run_spell(det, far_pair(palm(LEFT), palm(RIGHT)), 8) is PoseState.ACTIVE
 
 
 def test_shield_detector_activates_with_two_fists() -> None:
-    assert run_shield(ShieldDetector(), far_pair(fist(LEFT), fist(RIGHT)), 8) is PoseState.ACTIVE
+    det = SpellDetector(is_shield)
+    assert run_spell(det, far_pair(fist(LEFT), fist(RIGHT)), 8) is PoseState.ACTIVE
 
 
 def test_shield_detector_not_active_before_confirmation() -> None:
-    assert run_shield(ShieldDetector(), far_pair(palm(LEFT), palm(RIGHT)), 7) is PoseState.CANDIDATE
+    det = SpellDetector(is_shield)
+    assert run_spell(det, far_pair(palm(LEFT), palm(RIGHT)), 7) is PoseState.CANDIDATE
 
 
 def test_shield_detector_never_activates_for_mixed_hands() -> None:
-    assert run_shield(ShieldDetector(), far_pair(palm(LEFT), fist(RIGHT)), 50) is PoseState.IDLE
+    det = SpellDetector(is_shield)
+    assert run_spell(det, far_pair(palm(LEFT), fist(RIGHT)), 50) is PoseState.IDLE
 
 
 def test_shield_detector_survives_one_hand_flicker() -> None:
-    det = ShieldDetector()
+    det = SpellDetector(is_shield)
     shield = far_pair(palm(LEFT), palm(RIGHT))
-    run_shield(det, shield, 8)
+    run_spell(det, shield, 8)
     assert det.update([palm(LEFT)]).state is PoseState.ACTIVE  # one hand lost for a frame
     assert det.update(shield).state is PoseState.ACTIVE
 
 
 def test_shield_detector_deactivates_when_hands_leave() -> None:
-    det = ShieldDetector()
-    run_shield(det, far_pair(palm(LEFT), palm(RIGHT)), 8)
-    assert run_shield(det, [], 3) is PoseState.IDLE
+    det = SpellDetector(is_shield)
+    run_spell(det, far_pair(palm(LEFT), palm(RIGHT)), 8)
+    assert run_spell(det, [], 3) is PoseState.IDLE
 
 
 def test_shield_detector_alternating_frames_never_activate() -> None:
-    det = ShieldDetector()
+    det = SpellDetector(is_shield)
     shield = far_pair(fist(LEFT), fist(RIGHT))
     for i in range(100):
         frame = shield if i % 2 == 0 else []
@@ -589,7 +754,32 @@ def test_shield_detector_alternating_frames_never_activate() -> None:
 
 
 def test_shield_detector_reset() -> None:
-    det = ShieldDetector()
-    run_shield(det, far_pair(palm(LEFT), palm(RIGHT)), 8)
+    det = SpellDetector(is_shield)
+    run_spell(det, far_pair(palm(LEFT), palm(RIGHT)), 8)
     det.reset()
     assert det.update(far_pair(palm(LEFT), palm(RIGHT))).state is PoseState.IDLE
+
+
+# Images of Ikkon through SpellDetector
+def test_ikkon_detector_activates_with_two_pinches() -> None:
+    det = SpellDetector(is_ikkon)
+    assert run_spell(det, far_pair(pinch_hand(LEFT), pinch_hand(RIGHT)), 8) is PoseState.ACTIVE
+
+
+def test_ikkon_detector_never_activates_for_a_shield_pose() -> None:
+    det = SpellDetector(is_ikkon)
+    assert run_spell(det, far_pair(palm(LEFT), palm(RIGHT)), 50) is PoseState.IDLE
+
+
+def test_shield_detector_never_activates_for_an_ikkon_pose() -> None:
+    det = SpellDetector(is_shield)
+    assert run_spell(det, far_pair(pinch_hand(LEFT), pinch_hand(RIGHT)), 50) is PoseState.IDLE
+
+
+def test_ikkon_detector_survives_single_frame_dropouts() -> None:
+    det = SpellDetector(is_ikkon)
+    pose = far_pair(pinch_hand(LEFT), pinch_hand(RIGHT))
+    run_spell(det, pose, 8)
+    for _ in range(20):
+        assert det.update([]).state is PoseState.ACTIVE
+        assert det.update(pose).state is PoseState.ACTIVE
