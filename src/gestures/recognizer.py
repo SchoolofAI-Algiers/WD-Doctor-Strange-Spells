@@ -100,16 +100,17 @@ def classify_hand(geometry: HandGeometry, config: GestureConfig | None = None) -
         return Gesture.NONE
 
     fingers = extended_fingers(geometry.landmarks_norm, config)
+    others = fingers - {"thumb"}
 
-    if not fingers:
+    if not others:
         return Gesture.CLOSED_FIST
-    if fingers >= {"index", "ring", "pinky"} and is_thumb_middle_pinch(geometry, config):
+    if others >= {"index", "ring", "pinky"} and is_thumb_middle_pinch(geometry, config):
         return Gesture.THUMB_MIDDLE_PINCH
-    if len(fingers) == len(FINGERS):
+    if len(others) == 4:
         return Gesture.OPEN_PALM
-    if fingers == frozenset({"index"}):
+    if others == frozenset({"index"}):
         return Gesture.POINTING
-    if fingers == frozenset({"index", "middle"}):
+    if others == frozenset({"index", "middle"}):
         return Gesture.PEACE
 
     return Gesture.NONE
@@ -212,18 +213,33 @@ class PoseStabilizer:
         self._frames_held = 0
 
 
+HANDEDNESS_ID = {"Left": 0, "Right": 1}
+
+
+def hand_ids_from_handedness(count: int, handedness: list[str] | None) -> list[int]:
+    positional = list(range(count))
+    if handedness is None or len(handedness) != count:
+        return positional
+    ids = [HANDEDNESS_ID.get(label, -1) for label in handedness]
+    if -1 in ids or len(set(ids)) != count:
+        return positional
+    return ids
+
+
 class GestureRecognizer:
     def __init__(self, config: GestureConfig | None = None) -> None:
         self.config = config or GestureConfig()
         self._stabilizers: dict[int, dict[Gesture, PoseStabilizer]] = {}
 
-    def update(self, geometries: list[HandGeometry]) -> list[GestureState]:
-        for lost_id in [h for h in self._stabilizers if h >= len(geometries)]:
+    def update(
+        self, geometries: list[HandGeometry], handedness: list[str] | None = None
+    ) -> list[GestureState]:
+        ids = hand_ids_from_handedness(len(geometries), handedness)
+        for lost_id in [h for h in self._stabilizers if h not in ids]:
             del self._stabilizers[lost_id]
 
-
         states: list[GestureState] = []
-        for hand_id, geometry in enumerate(geometries):
+        for hand_id, geometry in zip(ids, geometries, strict=True):
             raw = classify_hand(geometry, self.config)
             states.append(self._update_hand(hand_id, raw))
         return states
