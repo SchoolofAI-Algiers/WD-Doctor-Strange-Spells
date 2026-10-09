@@ -1,8 +1,8 @@
-
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
 from src.motion.motion import (
     DepthTrend,
@@ -17,7 +17,9 @@ if TYPE_CHECKING:  # typing only, keeps update_raw() usable without geometry
     from src.geometry.calculator import HandGeometry
 
 Point = tuple[float, float]
-INDEX_TIP = 8  # MediaPipe landmark id for the index fingertip
+INDEX_TIP = (
+    8  # MediaPipe landmark id for the index fingertip (pipeline: tip_px = landmarks_px[INDEX_TIP])
+)
 
 
 @dataclass
@@ -61,19 +63,11 @@ class MotionState:
         return self.depth_trend is DepthTrend.AWAY
 
 
-def _read_geometry(geometry: "HandGeometry") -> tuple[Point, float, Point | None]:
-    """Return (palm_center_px, hand_size_px, index_tip_px).
-    """
-    from src.geometry.calculator import hand_size, palm_center
+def _read_geometry(geometry: HandGeometry) -> tuple[Point, float]:
+    """Return (palm_center_px, hand_size_px), read straight from HandGeometry."""
+    center = geometry.palm_center_px
+    return (float(center[0]), float(center[1])), float(geometry.hand_size_px)
 
-    center = palm_center(geometry)
-    size = hand_size(geometry)
-    try:
-        lm = geometry.landmarks[INDEX_TIP]
-        tip: Point | None = (float(lm[0]), float(lm[1]))
-    except (AttributeError, IndexError, TypeError):
-        tip = None
-    return (float(center[0]), float(center[1])), float(size), tip
 
 @dataclass
 class _HandTrack:
@@ -90,18 +84,21 @@ class MotionAnalyzer:
         self._velocity = VelocityTracker(self.cfg.velocity_ema_alpha)
         self._tracks: dict[int, _HandTrack] = {}
 
-    #main entry point
+    # main entry point
     def update(
         self,
         hand_id: int,
-        geometry: "HandGeometry",
+        geometry: HandGeometry,
         dt: float,
+        *,
+        tip_px: Point | None = None,
         is_pointing: bool = False,
     ) -> MotionState:
-        """is_pointing comes from the gesture layer (fingertip trail only
-        records while it is True)."""
-        center, size, tip = _read_geometry(geometry)
-        return self.update_raw(hand_id, center, size, dt, tip, is_pointing)
+        """tip_px is the index fingertip in pixels (landmarks_px[8]), computed by
+        the pipeline. is_pointing comes from the gesture layer (the fingertip
+        trail only records while it is True)."""
+        center, size = _read_geometry(geometry)
+        return self.update_raw(hand_id, center, size, dt, tip_px, is_pointing)
 
     def update_raw(
         self,
@@ -141,7 +138,7 @@ class MotionAnalyzer:
             depth_trend=depth,
         )
 
-    # per-hand access / cleanup 
+    # per-hand access / cleanup
     def get_trajectory(self, hand_id: int) -> list[Point]:
         track = self._tracks.get(hand_id)
         return track.trajectory.points() if track else []

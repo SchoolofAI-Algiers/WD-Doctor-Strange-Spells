@@ -34,9 +34,7 @@ class VelocityTracker:
         self._alpha = velocity_ema_alpha
         self._history: dict[int, _HandVelocityHistory] = {}
 
-    def update(
-        self, hand_id: int, position_px: tuple[float, float], dt: float
-    ) -> VelocityResult:
+    def update(self, hand_id: int, position_px: tuple[float, float], dt: float) -> VelocityResult:
         """Call this once per frame, per hand, with its current palm center.
 
         Args:

@@ -29,9 +29,7 @@ def test_stationary_hand_has_zero_speed():
 
 def test_known_horizontal_movement_gives_expected_velocity():
     """Hand moves 30px to the right in exactly 1 second -> 30 px/s."""
-    tracker = VelocityTracker(
-        velocity_ema_alpha=1.0
-    )  # alpha=1 disables smoothing
+    tracker = VelocityTracker(velocity_ema_alpha=1.0)  # alpha=1 disables smoothing
     tracker.update(1, (0.0, 0.0), dt=1.0)
 
     result = tracker.update(1, (30.0, 0.0), dt=1.0)
@@ -67,9 +65,7 @@ def test_speeding_up_gives_positive_acceleration():
     tracker.update(1, (0.0, 0.0), dt=1.0)
     tracker.update(1, (10.0, 0.0), dt=1.0)  # v = 10 px/s
 
-    result = tracker.update(
-        1, (30.0, 0.0), dt=1.0
-    )  # v = 20 px/s -> accel = +10
+    result = tracker.update(1, (30.0, 0.0), dt=1.0)  # v = 20 px/s -> accel = +10
 
     assert result.acceleration_px_s2[0] == pytest.approx(10.0)
 
@@ -78,9 +74,7 @@ def test_smoothing_blends_new_and_previous_reading():
     """With alpha=0.5, a sudden jump should only move the result halfway."""
     tracker = VelocityTracker(velocity_ema_alpha=0.5)
     tracker.update(1, (0.0, 0.0), dt=1.0)
-    tracker.update(
-        1, (10.0, 0.0), dt=1.0
-    )  # raw v=10, smoothed: 0.5*10+0.5*0=5
+    tracker.update(1, (10.0, 0.0), dt=1.0)  # raw v=10, smoothed: 0.5*10+0.5*0=5
 
     result = tracker.update(1, (20.0, 0.0), dt=1.0)
     # raw v = 10 again, smoothed = 0.5*10 + 0.5*5 = 7.5, not 10

@@ -1,20 +1,20 @@
-"""motion.py - Motion Analysis subsystem (merge of two parts trajectory stationary depth and velocity ).
-"""
+"""motion.py - Motion Analysis subsystem (merge of two parts trajectory stationary depth and velocity )."""
+
 from __future__ import annotations
 
 import math
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from src.geometry.calculator import HandGeometry,distance, hand_size, palm_center
 
-# PART 1 by Djo - Trajectory, Stationary, Depth 
+# PART 1 by Djo - Trajectory, Stationary, Depth
 
 Point = tuple[float, float]
 
+
 class TrajectoryBuffer:  # remembers the last N positions of the hand.
     def __init__(self, maxlen: int = 60) -> None:
-        if maxlen <1:
+        if maxlen < 1:
             raise ValueError("maxlen must be a >=1")
         # deque with maxlen: when full, adding a new item drops the oldest one
         self._pts: deque[tuple[float, float, float]] = deque(maxlen=maxlen)
@@ -27,12 +27,12 @@ class TrajectoryBuffer:  # remembers the last N positions of the hand.
         # Return only the (x, y) pairs, oldest first, x,y of deque in _pts
         return [(x, y) for x, y, _ in self._pts]
 
-    def last(self)-> Point | None:
+    def last(self) -> Point | None:
         if not self._pts:
             return None
-        x,y,_ = self._pts[-1]
-        return (x,y)
-    
+        x, y, _ = self._pts[-1]
+        return (x, y)
+
     def clear(self) -> None:
         self._pts.clear()  # clears the deque of all points stored in _pts
 
@@ -45,14 +45,12 @@ class StationaryDetector:  # detects when a hand is not moving.
 
     def __init__(
         self, enter_thresh: float = 0.10, exit_thresh: float = 0.25, min_frames: int = 5
-    ) -> (
-        None
-    ):  
+    ) -> None:
         if not 0 < enter_thresh < exit_thresh:
             raise ValueError("enter_thresh must be >0 and < exit_thresh")
         if min_frames < 1:
             raise ValueError("min_frames must be >=1")
-        
+
         # threshold are by hand size perr sec, 0.1=20px per s and 0.25 is 50 px per sec
         # A Hand is considered stationary if its speed is below enter_thresh for at least min_frames consecutive frames. It is considered moving again if its speed exceeds exit_thresh.
         # when the hand is between enter and exit threshold, we don't change the state, we wait for the next frame to decide if it is still or not
@@ -74,15 +72,15 @@ class StationaryDetector:  # detects when a hand is not moving.
         )  # hand-sizes per second, this represents how fast the hand moves per sec
 
         if self.stationary:
-            if (
-                s > self.exit_thresh
-            ):  # If the hand is moving fast enough, it's no longer stationary
+            if s > self.exit_thresh:  # If the hand is moving fast enough, it's no longer stationary
                 self.stationary = False
                 self._count = 0
         elif (
             s < self.enter_thresh
         ):  # If the hand is moving slowly enough, increment the count of consecutive slow frames
-            self._count += 1  # it has to stay below the enter threshold for 5 frames to be considered still
+            self._count += (
+                1  # it has to stay below the enter threshold for 5 frames to be considered still
+            )
             if self._count >= self.min_frames:
                 self.stationary = True
         else:
@@ -115,9 +113,9 @@ class DepthTrendDetector:
             raise ValueError("alpha must be between 0 and 1")
         if window < 1:
             raise ValueError("window must be >=1")
-        if ratio_thresh <=1.0:
+        if ratio_thresh <= 1.0:
             raise ValueError("ratio_thresh must be >1")
-        
+
         self.alpha = alpha  # alpha: smoothing factor
         self.ratio_thresh = ratio_thresh  # ratio threshol: how big change is , it has to be above 8% to be considered moving toward or away
         self._need = window + 1  # values needed before we can compare
@@ -130,18 +128,12 @@ class DepthTrendDetector:
         self, size: float
     ) -> DepthTrend:  # we give it obj and measure the size of the hand with px
         if size <= 0:
-            return (
-                DepthTrend.NONE
-            )  # we don't want to consider bad measurements, we return NONE
+            return DepthTrend.NONE  # we don't want to consider bad measurements, we return NONE
         if self._smooth is None:
             self._smooth = size  # first frame, we take size as it is
         else:
-            self._smooth = (
-                self.alpha * size + (1 - self.alpha) * self._smooth
-            )  # EMA Smoothing
-        self._hist.append(
-            self._smooth
-        )  # we append in deque the smnoothest size of hand
+            self._smooth = self.alpha * size + (1 - self.alpha) * self._smooth  # EMA Smoothing
+        self._hist.append(self._smooth)  # we append in deque the smnoothest size of hand
 
         if len(self._hist) < self._need:  # not enough history yet
             return DepthTrend.NONE
@@ -197,6 +189,7 @@ class FingertipTrail:
 
 # PART 2 by Meriem - velocity
 
+
 @dataclass
 class _HandVelocityHistory:
     """What we need to remember about ONE hand, between frames."""
@@ -222,9 +215,7 @@ class VelocityTracker:
         self._alpha = velocity_ema_alpha
         self._history: dict[int, _HandVelocityHistory] = {}
 
-    def update(
-        self, hand_id: int, position_px: tuple[float, float], dt: float
-    ) -> VelocityResult:
+    def update(self, hand_id: int, position_px: tuple[float, float], dt: float) -> VelocityResult:
         """Call this once per frame, per hand, with its current palm center.
 
         Args:
@@ -306,6 +297,3 @@ class VelocityTracker:
     def clear(self, hand_id: int) -> None:
         """Forget a hand's history (call this when the hand disappears)."""
         self._history.pop(hand_id, None)
-
-
-#big class that merges both parts | not done yet 
