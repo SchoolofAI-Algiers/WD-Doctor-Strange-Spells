@@ -39,7 +39,6 @@ from src.geometry.calculator import (
     ids=["higher_width", "square_image", "higher_height", "unit_scale", "zero_dims", "xyz_input"],
 )
 def test_norm2px(L, w, h, expected):
-
     result = norm2px(L, w, h)
     np.testing.assert_allclose(result, expected)
 
@@ -78,7 +77,6 @@ def test_norm2px_z_has_no_effect():
     ],
 )
 def test_landmark_normalization(L, hand_size, expected):
-
     result = landmark_normalization(L, hand_size)
     np.testing.assert_allclose(result, expected)
 

@@ -1,21 +1,40 @@
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
-from enum import Enum
 from typing import Any
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from src.gestures.recognizer import Gesture, PoseState
+from src.gestures.recognizer import GestureState as RecognizedGesture
+
 ASSET_SIZE = 512
 ASSET_RADIUS = 256
 _ASSET_CACHE: dict[tuple[str, bool, tuple[int, int, int] | None], NDArray[np.float32]] = {}
 
+SPELL_FOR: dict[Gesture, str] = {  # recognized gesture -> spell id in make_spells()
+    Gesture.OPEN_PALM: "shield",
+}
 
-class GestureState(Enum):  # TEMP: replace with the gesture team's enum when it is ready
-    IDLE = 0
-    ACTIVE = 1
+
+@dataclass
+class ActiveGesture:
+    state: PoseState
+    confidence: float
+
+
+def to_active(g: RecognizedGesture) -> ActiveGesture:
+    on = g.gesture in SPELL_FOR and g.frames_held > 0
+    return ActiveGesture(
+        state=PoseState.ACTIVE if on else PoseState.IDLE,
+        confidence=g.confidence if on else 0.0,
+    )
+
+
+# Backward-compat alias: old tests use sr.GestureState, canonical enum is PoseState.
+GestureState = PoseState
 
 
 @dataclass
@@ -90,7 +109,7 @@ class SpellRenderer:
         self._M = np.zeros((2, 3), np.float64)
 
     def _is_active(self, gesture: Any) -> bool:
-        return bool(gesture.state == GestureState.ACTIVE)
+        return bool(gesture.state == PoseState.ACTIVE)
 
     def compute_transform(
         self,

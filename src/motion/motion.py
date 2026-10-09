@@ -64,7 +64,6 @@ class StationaryDetector:  # detects when a hand is not moving.
     def update(
         self, speed_px_s: float, hand_size_px: float
     ) -> bool:  # speed_px_s: how fast the hand is moving rn, is it still or not , hand_size_px: how big the hand looks in the image
-
         if hand_size_px <= 0:  # bad measurement: keep the previous answer
             return self.stationary
         s = (
@@ -297,3 +296,6 @@ class VelocityTracker:
     def clear(self, hand_id: int) -> None:
         """Forget a hand's history (call this when the hand disappears)."""
         self._history.pop(hand_id, None)
+
+
+# big class that merges both parts | not done yet

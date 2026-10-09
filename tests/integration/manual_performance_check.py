@@ -19,5 +19,7 @@ with Capture(width=640, height=480, fps=TARGET_FPS) as cam:
 
 print(f"Average read time: {sum(read_times) / len(read_times):.1f} ms")
 print(f"Worst read time:   {max(read_times):.1f} ms")
-print(f"Measured FPS:      {fps:.1f} (target {TARGET_FPS}, allowed {TARGET_FPS - 2} to {TARGET_FPS + 2})")
+print(
+    f"Measured FPS:      {fps:.1f} (target {TARGET_FPS}, allowed {TARGET_FPS - 2} to {TARGET_FPS + 2})"
+)
 print(f"Frame size:        {frame.nbytes / 1_000_000:.2f} MB")
