@@ -1,7 +1,7 @@
 """Unit tests for the gesture subsystem.
 
 Pure logic: hands are built from synthetic landmarks, no camera, no MediaPipe.
-Adjust the import below if your module lives elsewhere.
+
 """
 
 import random
@@ -12,6 +12,7 @@ import pytest
 from src.geometry.calculator import FloatArray, HandGeometry
 from src.gestures.recognizer import (
     FINGERS,
+    HANDEDNESS_ID,
     Gesture,
     GestureConfig,
     GestureRecognizer,
@@ -21,6 +22,7 @@ from src.gestures.recognizer import (
     StabilityConfig,
     classify_hand,
     extended_fingers,
+    hand_ids_from_handedness,
     hands_together,
     is_ikkon,
     is_shield,
@@ -29,6 +31,7 @@ from src.gestures.recognizer import (
 
 IMAGE_W, IMAGE_H = 640, 480
 ALL_FINGERS = ("thumb", "index", "middle", "ring", "pinky")
+FOUR_FINGERS = ("index", "middle", "ring", "pinky")  # everything but the thumb
 PINCH_FINGERS = ("index", "ring", "pinky")  # fingers that stay straight in a thumb-middle pinch
 
 # (first landmark index of the finger, x position of the finger column)
@@ -119,6 +122,11 @@ def pinch_hand(center: tuple[float, float] = LEFT, angle_deg: float = 0.0) -> Ha
     return make_geometry(PINCH_FINGERS, center=center, pinch=True, angle_deg=angle_deg)
 
 
+def ghost_fist(center: tuple[float, float] = LEFT) -> HandGeometry:
+    """A 'hand' that is too small to be real (5px -> hand_size_norm ~0.008)."""
+    return make_geometry((), size_px=5.0, center=center)
+
+
 def far_pair(a: HandGeometry, b: HandGeometry) -> list[HandGeometry]:
     """Two hands far apart (not 'together')."""
     return [a, b]
@@ -130,10 +138,13 @@ def close_pair() -> list[HandGeometry]:
 
 
 def feed_recognizer(
-    recognizer: GestureRecognizer, geometries: list[HandGeometry], n: int
+    recognizer: GestureRecognizer,
+    geometries: list[HandGeometry],
+    n: int,
+    handedness: list[str] | None = None,
 ) -> list[list[Gesture]]:
     """Feed the same frame n times, return the gestures reported at each frame."""
-    return [[s.gesture for s in recognizer.update(geometries)] for _ in range(n)]
+    return [[s.gesture for s in recognizer.update(geometries, handedness)] for _ in range(n)]
 
 
 def activate(stabilizer: PoseStabilizer) -> None:
@@ -154,6 +165,7 @@ def test_default_thresholds_match_spec() -> None:
     cfg = GestureConfig()
     assert cfg.thumb_threshold == pytest.approx(1.3)
     assert cfg.finger_threshold == pytest.approx(1.5)
+    assert cfg.min_hand_size_norm == pytest.approx(0.05)
 
 
 def test_default_spell_thresholds() -> None:
@@ -173,7 +185,7 @@ def test_finger_landmark_indices_match_spec() -> None:
     assert {f.name: (f.tip, f.pip, f.mcp) for f in FINGERS} == expected
 
 
-# Single-hand classification
+# Single-hand classification (the thumb is ignored, only the 4 other fingers decide)
 @pytest.mark.parametrize(
     ("extended", "expected"),
     [
@@ -181,11 +193,13 @@ def test_finger_landmark_indices_match_spec() -> None:
         (ALL_FINGERS, Gesture.OPEN_PALM),
         (("index",), Gesture.POINTING),
         (("index", "middle"), Gesture.PEACE),
-        (("thumb",), Gesture.NONE),  # THUMBS_UP no longer exists
+        (("thumb",), Gesture.CLOSED_FIST),  # thumb alone does not count: still a fist
+        (("thumb", "index"), Gesture.POINTING),  # "L" shape is still pointing
+        (("thumb", "index", "middle"), Gesture.PEACE),
         (("ring",), Gesture.NONE),
-        (("thumb", "index"), Gesture.NONE),
         (("index", "middle", "ring"), Gesture.NONE),
-        (("index", "middle", "ring", "pinky"), Gesture.NONE),  # 4 fingers, no thumb
+        (("thumb", "index", "middle", "ring"), Gesture.NONE),
+        (FOUR_FINGERS, Gesture.OPEN_PALM),  # 4 fingers, no thumb: palm
     ],
 )
 def test_classify_hand(extended: tuple[str, ...], expected: Gesture) -> None:
@@ -193,10 +207,21 @@ def test_classify_hand(extended: tuple[str, ...], expected: Gesture) -> None:
 
 
 @pytest.mark.parametrize(
+    "others",
+    [(), ("index",), ("index", "middle"), ("ring",), ("index", "middle", "ring"), FOUR_FINGERS],
+)
+def test_classification_ignores_thumb(others: tuple[str, ...]) -> None:
+    without_thumb = classify_hand(make_geometry(others))
+    with_thumb = classify_hand(make_geometry(("thumb", *others)))
+    assert with_thumb is without_thumb
+
+
+@pytest.mark.parametrize(
     "extended",
     [(), ("index",), ("index", "middle"), ("thumb",), ALL_FINGERS],
 )
 def test_extended_fingers_reports_exact_set(extended: tuple[str, ...]) -> None:
+    # extended_fingers still reports the thumb: only classify_hand ignores it.
     result = extended_fingers(make_landmarks(extended), GestureConfig())
     assert result == frozenset(extended)
 
@@ -218,8 +243,7 @@ def test_classification_is_rotation_invariant(angle: float) -> None:
 
 
 def test_tiny_hand_is_none_not_fist() -> None:
-    ghost = make_geometry((), size_px=5.0)  # hand_size_norm < min_hand_size_norm
-    assert classify_hand(ghost) is Gesture.NONE
+    assert classify_hand(ghost_fist()) is Gesture.NONE
 
 
 def test_classify_hand_uses_default_config_when_none_given() -> None:
@@ -332,6 +356,18 @@ def test_shield_two_fists() -> None:
     assert is_shield(far_pair(fist(LEFT), fist(RIGHT)))
 
 
+def test_shield_ignores_thumb_position() -> None:
+    # Fist with the thumb sticking out / four-finger palm: still a shield.
+    thumb_out_fists = far_pair(
+        make_geometry(("thumb",), center=LEFT), make_geometry(("thumb",), center=RIGHT)
+    )
+    four_finger_palms = far_pair(
+        make_geometry(FOUR_FINGERS, center=LEFT), make_geometry(FOUR_FINGERS, center=RIGHT)
+    )
+    assert is_shield(thumb_out_fists)
+    assert is_shield(four_finger_palms)
+
+
 def test_shield_rejects_mixed_palm_and_fist() -> None:
     assert not is_shield(far_pair(palm(LEFT), fist(RIGHT)))
 
@@ -350,11 +386,7 @@ def test_shield_needs_exactly_two_hands(count: int) -> None:
 
 
 def test_shield_rejects_tiny_ghost_hands() -> None:
-    ghosts = [
-        make_geometry((), size_px=5.0, center=LEFT),
-        make_geometry((), size_px=5.0, center=RIGHT),
-    ]
-    assert not is_shield(ghosts)
+    assert not is_shield([ghost_fist(LEFT), ghost_fist(RIGHT)])
 
 
 # The images of Ikkon
@@ -546,6 +578,47 @@ def test_flicker_random_dropouts_shorter_than_exit_never_deactivate() -> None:
         assert stab.update(seen).state is PoseState.ACTIVE
 
 
+# hand_ids_from_handedness
+def test_handedness_id_mapping() -> None:
+    assert HANDEDNESS_ID == {"Left": 0, "Right": 1}
+
+
+@pytest.mark.parametrize(
+    ("count", "handedness", "expected"),
+    [
+        (0, None, []),
+        (0, [], []),
+        (1, None, [0]),
+        (2, None, [0, 1]),
+        (1, ["Left"], [0]),
+        (1, ["Right"], [1]),  # a single right hand keeps id 1
+        (2, ["Left", "Right"], [0, 1]),
+        (2, ["Right", "Left"], [1, 0]),  # ids follow the label, not the position
+    ],
+)
+def test_hand_ids_follow_handedness(
+    count: int, handedness: list[str] | None, expected: list[int]
+) -> None:
+    assert hand_ids_from_handedness(count, handedness) == expected
+
+
+@pytest.mark.parametrize(
+    ("count", "handedness"),
+    [
+        (2, ["Left"]),  # length mismatch
+        (1, ["Left", "Right"]),  # length mismatch
+        (2, ["Left", "Left"]),  # duplicate labels
+        (2, ["Right", "Right"]),
+        (2, ["Left", "Unknown"]),  # unknown label
+        (1, ["left"]),  # labels are case-sensitive
+    ],
+)
+def test_hand_ids_fall_back_to_positional_when_handedness_is_unusable(
+    count: int, handedness: list[str]
+) -> None:
+    assert hand_ids_from_handedness(count, handedness) == list(range(count))
+
+
 # GestureRecognizer
 def test_recognizer_no_hands_returns_empty_list() -> None:
     assert GestureRecognizer().update([]) == []
@@ -617,6 +690,16 @@ def test_recognizer_gesture_switch_is_clean() -> None:
     ]
 
 
+def test_recognizer_thumb_wobble_does_not_break_a_fist() -> None:
+    # The thumb flips in/out every frame: since it is ignored, the fist stays stable.
+    rec = GestureRecognizer()
+    folded, out = make_geometry(()), make_geometry(("thumb",))
+    last: list[Gesture] = []
+    for i in range(20):
+        last = [s.gesture for s in rec.update([folded if i % 2 else out])]
+    assert last == [Gesture.CLOSED_FIST]
+
+
 def test_recognizer_resets_state_when_hand_is_lost() -> None:
     rec = GestureRecognizer()
     feed_recognizer(rec, [palm()], 8)
@@ -642,13 +725,6 @@ def test_recognizer_reset_forgets_everything() -> None:
     assert rec.update([palm()])[0].gesture is Gesture.NONE
 
 
-def test_recognizer_two_hands_together() -> None:
-    rec = GestureRecognizer()
-    frame = [fist((300.0, 240.0)), fist((340.0, 240.0))]
-    history = feed_recognizer(rec, frame, 8)
-    assert history[-1] == [Gesture.TWO_HANDS_TOGETHER, Gesture.TWO_HANDS_TOGETHER]
-
-
 def test_recognizer_custom_stability_config() -> None:
     stability = StabilityConfig(enter_frames=1, confirm_frames=1)
     rec = GestureRecognizer(GestureConfig(stability=stability))
@@ -664,12 +740,74 @@ def test_recognizer_reports_pinch_on_each_hand() -> None:
     assert history[-1] == [Gesture.THUMB_MIDDLE_PINCH, Gesture.THUMB_MIDDLE_PINCH]
 
 
-def test_recognizer_reports_together_instead_of_pinch_when_hands_touch() -> None:
-    # Documented behaviour: TWO_HANDS_TOGETHER overrides single-hand gestures.
-    # Spell detectors (is_ikkon, ...) are not affected: they read the raw geometries.
+def test_recognizer_never_emits_two_hands_together() -> None:
+    # TWO_HANDS_TOGETHER exists in the enum and hands_together() works, but the recognizer
+    # does not emit it: close hands still report their own single-hand gesture.
+    # Spell detectors (is_ikkon, ...) read the raw geometries, so they are unaffected.
+    pair = close_pair()
+    assert hands_together(pair)
+    history = feed_recognizer(GestureRecognizer(), pair, 8)
+    assert history[-1] == [Gesture.THUMB_MIDDLE_PINCH, Gesture.THUMB_MIDDLE_PINCH]
+    assert all(Gesture.TWO_HANDS_TOGETHER not in frame for frame in history)
+
+    fists = [fist((300.0, 240.0)), fist((340.0, 240.0))]
+    history = feed_recognizer(GestureRecognizer(), fists, 8)
+    assert history[-1] == [Gesture.CLOSED_FIST, Gesture.CLOSED_FIST]
+
+
+# GestureRecognizer with handedness
+def test_recognizer_without_handedness_uses_positional_ids() -> None:
+    states = GestureRecognizer().update([palm(LEFT), palm(RIGHT)])
+    assert [s.hand_id for s in states] == [0, 1]
+
+
+def test_recognizer_single_right_hand_gets_id_1() -> None:
+    states = GestureRecognizer().update([palm(RIGHT)], ["Right"])
+    assert [s.hand_id for s in states] == [1]
+
+
+def test_recognizer_ids_follow_handedness_when_list_order_swaps() -> None:
     rec = GestureRecognizer()
-    history = feed_recognizer(rec, close_pair(), 8)
-    assert history[-1] == [Gesture.TWO_HANDS_TOGETHER, Gesture.TWO_HANDS_TOGETHER]
+    for _ in range(8):
+        rec.update([palm(LEFT), fist(RIGHT)], ["Left", "Right"])
+    # The detector now lists the right hand first: the state must follow the hand.
+    states = rec.update([fist(RIGHT), palm(LEFT)], ["Right", "Left"])
+    assert [(s.hand_id, s.gesture) for s in states] == [
+        (1, Gesture.CLOSED_FIST),
+        (0, Gesture.OPEN_PALM),
+    ]
+    assert [s.frames_held for s in states] == [2, 2]  # no ramp-up restart
+
+
+def test_recognizer_positional_ids_mix_hands_when_list_order_swaps() -> None:
+    # Documents what handedness fixes: without it, a swapped order feeds the wrong hand.
+    rec = GestureRecognizer()
+    for _ in range(8):
+        rec.update([palm(LEFT), fist(RIGHT)])
+    states = rec.update([fist(RIGHT), palm(LEFT)])
+    # Slot 0 now receives a fist but still reports the old palm (it survives a short dropout).
+    assert states[0].gesture is Gesture.OPEN_PALM
+
+
+def test_recognizer_keeps_remaining_hand_when_other_one_disappears() -> None:
+    rec = GestureRecognizer()
+    both = [palm(LEFT), palm(RIGHT)]
+    feed_recognizer(rec, both, 8, ["Left", "Right"])
+    # Left hand leaves: the right hand keeps id 1 and its confirmed gesture.
+    states = rec.update([palm(RIGHT)], ["Right"])
+    assert [(s.hand_id, s.gesture) for s in states] == [(1, Gesture.OPEN_PALM)]
+    # Left hand comes back: it ramps up from scratch, the right one is untouched.
+    states = rec.update(both, ["Left", "Right"])
+    assert states[0].gesture is Gesture.NONE
+    assert states[1].gesture is Gesture.OPEN_PALM
+
+
+def test_recognizer_falls_back_to_positional_ids_on_bad_handedness() -> None:
+    rec = GestureRecognizer()
+    states = rec.update([palm(LEFT), palm(RIGHT)], ["Left", "Left"])  # duplicate labels
+    assert [s.hand_id for s in states] == [0, 1]
+    states = rec.update([palm(LEFT), palm(RIGHT)], ["Left"])  # wrong length
+    assert [s.hand_id for s in states] == [0, 1]
 
 
 # SpellDetector (stabilised spells)
@@ -783,3 +921,127 @@ def test_ikkon_detector_survives_single_frame_dropouts() -> None:
     for _ in range(20):
         assert det.update([]).state is PoseState.ACTIVE
         assert det.update(pose).state is PoseState.ACTIVE
+
+
+
+# when MediaPipe loses the hand, it can still output a few collapsed
+# landmarks. All fingertips then sit on top of their MCPs, so every finger is
+# "curled" and the hand would be classified as CLOSED_FIST. The size gate
+# rejects those detections BEFORE looking at the fingers.
+GHOST_MIN_PX = 0.05 * max(IMAGE_W, IMAGE_H)  # 32 px for a 640 px wide image
+
+
+def test_ghost_without_size_gate_would_be_a_fist() -> None:
+    # Proves the gate is what protects us: without it the ghost IS a fist.
+    gate_off = GestureConfig(min_hand_size_norm=0.0)
+    assert classify_hand(ghost_fist(), gate_off) is Gesture.CLOSED_FIST
+    assert classify_hand(ghost_fist()) is Gesture.NONE
+
+
+@pytest.mark.parametrize("size_px", [0.0, 1.0, 5.0, 20.0, GHOST_MIN_PX - 1.0])
+def test_size_gate_rejects_every_size_below_threshold(size_px: float) -> None:
+    for extended in ((), ("index",), ALL_FINGERS):
+        assert classify_hand(make_geometry(extended, size_px=size_px)) is Gesture.NONE
+
+
+def test_size_gate_boundary_is_strict() -> None:
+    # hand_size_norm == 0.05 is NOT below the threshold -> the hand is real.
+    assert classify_hand(make_geometry((), size_px=GHOST_MIN_PX)) is Gesture.CLOSED_FIST
+    assert classify_hand(make_geometry((), size_px=GHOST_MIN_PX + 1.0)) is Gesture.CLOSED_FIST
+    assert classify_hand(make_geometry((), size_px=GHOST_MIN_PX - 1.0)) is Gesture.NONE
+
+
+def test_ghost_hand_never_reaches_a_confirmed_fist_through_the_recognizer() -> None:
+    rec = GestureRecognizer()
+    history = feed_recognizer(rec, [ghost_fist()], 200)
+    assert all(frame == [Gesture.NONE] for frame in history)
+
+
+def test_ghost_hands_never_trigger_a_shield() -> None:
+    det = SpellDetector(is_shield)
+    for _ in range(200):
+        assert det.update([ghost_fist(LEFT), ghost_fist(RIGHT)]).state is PoseState.IDLE
+
+
+def test_ghost_hand_between_real_frames_does_not_create_a_fist() -> None:
+    # A real palm, then the detector hallucinates a ghost: no fist ever appears.
+    rec = GestureRecognizer()
+    feed_recognizer(rec, [palm()], 8)
+    seen: set[Gesture] = set()
+    for _ in range(50):
+        seen.update(s.gesture for s in rec.update([ghost_fist()]))
+    assert Gesture.CLOSED_FIST not in seen
+
+
+
+
+#a pose only becomes ACTIVE after enter_frames (3) + confirm_frames (5) = 8
+# CONSECUTIVE frames. Any miss before that resets the streak, so a signal that
+# flips every frame (or every few frames) never gets close to 8 in a row.
+@pytest.mark.parametrize(("enter", "confirm"), [(1, 1), (2, 4), (3, 5), (4, 8)])
+def test_confirmation_needs_exactly_enter_plus_confirm_consecutive_frames(
+    enter: int, confirm: int
+) -> None:
+    stab = PoseStabilizer(StabilityConfig(enter_frames=enter, confirm_frames=confirm))
+    states = [stab.update(True).state for _ in range(enter + confirm)]
+    assert all(s is not PoseState.ACTIVE for s in states[:-1])
+    assert states[-1] is PoseState.ACTIVE
+
+
+def test_default_confirmation_is_8_frames() -> None:
+    cfg = StabilityConfig()
+    assert cfg.enter_frames + cfg.confirm_frames == 8
+
+
+def test_alternating_signal_never_activates_over_200_frames() -> None:
+    # Both phases of the alternation, so neither "on-first" nor "off-first" slips through.
+    for offset in (0, 1):
+        stab = PoseStabilizer()
+        for i in range(200):
+            assert stab.update((i + offset) % 2 == 0).state is not PoseState.ACTIVE
+
+
+def test_alternating_hand_present_absent_never_confirms_a_gesture() -> None:
+    rec = GestureRecognizer()
+    for i in range(200):
+        frame = [palm()] if i % 2 == 0 else []
+        assert all(s.gesture is Gesture.NONE for s in rec.update(frame))
+
+
+def test_alternating_palm_fist_never_confirms_any_gesture() -> None:
+    # The classifier flips between two gestures every frame (e.g. jittery landmarks).
+    rec = GestureRecognizer()
+    for i in range(200):
+        frame = [palm() if i % 2 == 0 else fist()]
+        assert all(s.gesture is Gesture.NONE for s in rec.update(frame))
+
+
+def test_seven_good_frames_then_a_miss_never_confirms_through_the_recognizer() -> None:
+    rec = GestureRecognizer()
+    for _ in range(30):
+        for _ in range(7):
+            assert rec.update([palm()])[0].gesture is Gesture.NONE
+        rec.update([fist()])  # one bad frame resets the 7-frame streak
+
+
+def test_alternating_shield_never_activates_over_200_frames() -> None:
+    det = SpellDetector(is_shield)
+    shield = far_pair(palm(LEFT), palm(RIGHT))
+    for i in range(200):
+        assert det.update(shield if i % 2 == 0 else []).state is not PoseState.ACTIVE
+
+
+def test_alternating_ikkon_never_activates_over_200_frames() -> None:
+    det = SpellDetector(is_ikkon)
+    pose = far_pair(pinch_hand(LEFT), pinch_hand(RIGHT))
+    for i in range(200):
+        assert det.update(pose if i % 2 == 0 else []).state is not PoseState.ACTIVE
+
+
+def test_confirmation_still_works_after_a_flicker_burst() -> None:
+    # Flicker must not "poison" the detector: a steady pose afterwards activates in 8 frames.
+    det = SpellDetector(is_shield)
+    shield = far_pair(palm(LEFT), palm(RIGHT))
+    for i in range(200):
+        det.update(shield if i % 2 == 0 else [])
+    assert run_spell(det, shield, 8) is PoseState.ACTIVE
