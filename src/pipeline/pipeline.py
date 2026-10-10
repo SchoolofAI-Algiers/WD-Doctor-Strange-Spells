@@ -200,8 +200,9 @@ class Pipeline:
 
         # rendering: one shield per confirmed open palm, plus fading ghosts of lost hands.
         # A two-hand spell suppresses new shields so Ruby (both palms open)
-        # does not draw 2 shields + a label at the same time.
-        two_hand_on = any(active.values())
+        # does not draw 2 shields + a label at the same time. Clapping
+        # (together_now, before any detector confirms) also suppresses shields.
+        two_hand_on = any(active.values()) or self.context.together_now
         spells: list[tuple[SpellTransform, Any]] = []
         seen: set[int] = set()
         for g, geo in zip(states, geometries, strict=True):

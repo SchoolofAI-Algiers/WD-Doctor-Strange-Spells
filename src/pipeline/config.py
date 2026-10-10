@@ -41,7 +41,10 @@ class PipelineConfig:
     portal_image: str = "assets/spells/school_of_ai_door.jpg"  # shown between the hands on PORTAL
 
     # two-hand spells (Mirror, Ruby, Portal)
-    together_max_ratio: float = 2.5  # "together" = palm centers within this many hand sizes
+    # "together" = palm centers within this many hand sizes. ~1.2 means the
+    # palms touch/overlap; 2.5 kept hands "together" long after they parted,
+    # which blocked Ruby (needs NOT together) while Mirror still fired.
+    together_max_ratio: float = 1.2
     spell_stability: StabilityConfig = field(
         default_factory=lambda: StabilityConfig(enter_frames=2, confirm_frames=3, exit_frames=3)
     )
