@@ -24,7 +24,7 @@ BONES = [
 
 HAND_COLORS: dict[int, Color] = {0: (255, 160, 60), 1: (80, 220, 80)}  # BGR: Left, Right
 DEFAULT_COLOR: Color = (200, 80, 255)
-SPELL_NAMES = ("MIRROR", "RUBY", "PORTAL")
+SPELL_NAMES = ("CLAP", "MIRROR", "RUBY", "PORTAL")
 
 
 def put(

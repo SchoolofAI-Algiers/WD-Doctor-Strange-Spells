@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -360,6 +360,8 @@ class TwoHandContext:
         self.together_now = False
         self.together_seen_t = -math.inf  # history: last time the hands were close (clap burst)
         self.together_active_t = -math.inf  # last time TOGETHER was confirmed (8 frames)
+        self.clap_now = False  # actual touch: palms overlapping, not just nearby
+        self.clap_seen_t = -math.inf  # last time a real clap touched
         self.mirror_t = -math.inf  # last time Mirror was detected (Ruby exclusion)
         self.geom: dict[int, HandGeometry] = {}
         self.pose: dict[int, Gesture] = {}
@@ -376,6 +378,11 @@ class TwoHandContext:
         self.together_now = hands_together(list(geom.values()), self.config)
         if self.together_now:
             self.together_seen_t = t
+        self.clap_now = hands_together(
+            list(geom.values()), replace(self.config, together_max_ratio=self.config.clap_max_ratio)
+        )
+        if self.clap_now:
+            self.clap_seen_t = t
         if self._together.update(self.together_now).state is PoseState.ACTIVE:
             self.together_active_t = t
         if is_mirror(self):  # remember Mirror so Ruby doesn't fire right after it
@@ -424,8 +431,15 @@ def is_mirror(ctx: TwoHandContext) -> bool:
     return apart > MIRROR_MIN_APART and opposite and horizontal
 
 
+# Actual clap: palms touching/overlapping (tighter than "together").
+
+
+def is_clap(ctx: TwoHandContext) -> bool:
+    return ctx.clap_now
+
+
 # Ruby Rings
-# together burst (history) -> both hands OPEN_PALM within < 1 s
+# real clap -> both hands OPEN_PALM within < 1 s
 RUBY_CLAP_WINDOW = 1.0  # s: the clap must have happened less than this ago
 RUBY_MIRROR_COOLDOWN = 1.5  # s: no Ruby right after a Mirror (same hand motion)
 
@@ -433,11 +447,11 @@ RUBY_MIRROR_COOLDOWN = 1.5  # s: no Ruby right after a Mirror (same hand motion)
 def is_ruby(ctx: TwoHandContext) -> bool:
     return (
         ctx.both()
-        and not ctx.together_now
-        and ctx.t - ctx.together_seen_t < RUBY_CLAP_WINDOW
+        and not ctx.clap_now
+        and ctx.t - ctx.clap_seen_t < RUBY_CLAP_WINDOW
         and ctx.t - ctx.mirror_t > RUBY_MIRROR_COOLDOWN
-        and ctx.pose[0] is Gesture.OPEN_PALM
-        and ctx.pose[1] is Gesture.OPEN_PALM
+        and ctx.pose.get(0) is Gesture.OPEN_PALM
+        and ctx.pose.get(1) is Gesture.OPEN_PALM
     )
 
 

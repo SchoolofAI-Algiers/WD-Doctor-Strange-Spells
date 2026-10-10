@@ -33,6 +33,7 @@ from src.gestures.recognizer import (
     SpellDetector,
     TwoHandContext,
     hand_ids_from_handedness,
+    is_clap,
     is_mirror,
     is_portal,
     is_ruby,
@@ -60,7 +61,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # Priority when several two-hand detectors fire on the same frame
 # (Ruby's pull-apart motion is a subset of Mirror's). Only one flag
 # is ever reported ACTIVE so the overlay is unambiguous.
-SPELL_PRIORITY = ("PORTAL", "RUBY", "MIRROR")
+SPELL_PRIORITY = ("CLAP", "PORTAL", "RUBY", "MIRROR")
 
 
 def arbitrate_spells(raw_active: dict[str, bool]) -> dict[str, bool]:
@@ -125,6 +126,7 @@ class Pipeline:
         spell_cfg = replace(cfg.gesture_config, stability=cfg.spell_stability)
         mirror_cfg = replace(cfg.gesture_config, stability=cfg.mirror_stability)
         self.detectors: dict[str, SpellDetector] = {
+            "CLAP": SpellDetector(lambda g, c: is_clap(ctx), mirror_cfg),
             "MIRROR": SpellDetector(lambda g, c: is_mirror(ctx), mirror_cfg),
             "RUBY": SpellDetector(lambda g, c: is_ruby(ctx), spell_cfg),
             "PORTAL": SpellDetector(lambda g, c: is_portal(ctx), spell_cfg),
