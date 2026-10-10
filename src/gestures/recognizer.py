@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -45,6 +45,18 @@ class GestureConfig:
     min_hand_size_norm: float = 0.05  # avoids classifying a non-existent hand as a closed fist
     thumb_threshold: float = 1.3
     finger_threshold: float = 1.5
+    # Ring/pinky may read partially extended when the hand is tilted
+    # (PIP-MCP foreshortened). Peace allows them up to this ratio, while a
+    # true open palm still needs all four clearly out. Slightly above
+    # finger_threshold on purpose so Peace is easier than Open.
+    peace_curl_max_ratio: float = 1.65
+    # An edge-on hand (palm seen from the side) collapses the knuckle span:
+    # width(5-17) / length(0-9) drops toward 0. Below this it is not an open
+    # palm no matter how straight the fingers read.
+    palm_min_facing_ratio: float = 0.45
+    # Actual clap = palms touching/overlapping, much tighter than "together"
+    # (which is just nearby). Ruby re-arms on a clap, not on proximity.
+    clap_max_ratio: float = 0.7
     together_max_ratio: float = 1.0
     stability: StabilityConfig = field(default_factory=StabilityConfig)
     pinch_max_ratio: float = 0.3
@@ -74,6 +86,28 @@ def is_finger_extended(landmarks_norm: FloatArray, finger: FingerSpec, threshold
     return tip_to_mcp > threshold * pip_to_mcp
 
 
+def finger_ratio(landmarks_norm: FloatArray, finger: FingerSpec) -> float:
+    """tip-MCP distance relative to pip-MCP distance (same ratio as above)."""
+    pip_to_mcp = distance(landmarks_norm[finger.pip], landmarks_norm[finger.mcp])
+    if pip_to_mcp < 1e-9:
+        return float("inf")
+    return distance(landmarks_norm[finger.tip], landmarks_norm[finger.mcp]) / pip_to_mcp
+
+
+def is_peace_pose(landmarks_norm: FloatArray, config: GestureConfig) -> bool:
+    """Index+middle out, ring+pinky folded (with tilt margin, thumb ignored)."""
+    by_name = {f.name: f for f in FINGERS}
+    if finger_ratio(landmarks_norm, by_name["index"]) <= config.finger_threshold:
+        return False
+    if finger_ratio(landmarks_norm, by_name["middle"]) <= config.finger_threshold:
+        return False
+    if finger_ratio(landmarks_norm, by_name["ring"]) >= config.peace_curl_max_ratio:
+        return False
+    if finger_ratio(landmarks_norm, by_name["pinky"]) >= config.peace_curl_max_ratio:
+        return False
+    return True
+
+
 def extended_fingers(landmarks_norm: FloatArray, config: GestureConfig) -> frozenset[str]:
     return frozenset(
         finger.name
@@ -84,6 +118,20 @@ def extended_fingers(landmarks_norm: FloatArray, config: GestureConfig) -> froze
             config.thumb_threshold if finger.name == "thumb" else config.finger_threshold,
         )
     )
+
+
+def palm_facing_ratio(landmarks_norm: FloatArray) -> float:
+    """Knuckle span vs palm length, scale-invariant (1 = frontal, 0 = edge-on)."""
+    width = distance(landmarks_norm[5], landmarks_norm[17])
+    length = distance(landmarks_norm[0], landmarks_norm[9])
+    if length < 1e-9:
+        return 0.0
+    return width / length
+
+
+def is_palm_frontal(landmarks_norm: FloatArray, config: GestureConfig) -> bool:
+    """True when the palm (or back of hand) faces the camera, not edge-on."""
+    return palm_facing_ratio(landmarks_norm) >= config.palm_min_facing_ratio
 
 
 def is_thumb_middle_pinch(geometry: HandGeometry, config: GestureConfig | None = None) -> bool:
@@ -112,8 +160,16 @@ def classify_hand(geometry: HandGeometry, config: GestureConfig | None = None) -
         return Gesture.CLOSED_FIST
     if others >= {"index", "ring", "pinky"} and is_thumb_middle_pinch(geometry, config):
         return Gesture.THUMB_MIDDLE_PINCH
+    # Peace before Open: a tilted peace can read ring/pinky slightly extended,
+    # which must not flip it into an open palm + shield.
+    if is_peace_pose(geometry.landmarks_norm, config):
+        return Gesture.PEACE
     if len(others) == 4:
-        return Gesture.OPEN_PALM
+        # Four straight fingers only count when the palm faces the camera:
+        # edge-on hands read extended but must not trigger a shield.
+        if is_palm_frontal(geometry.landmarks_norm, config):
+            return Gesture.OPEN_PALM
+        return Gesture.NONE
     if others == frozenset({"index"}):
         return Gesture.POINTING
     if others == frozenset({"index", "middle"}):
@@ -304,7 +360,10 @@ class TwoHandContext:
         self.together_now = False
         self.together_seen_t = -math.inf  # history: last time the hands were close (clap burst)
         self.together_active_t = -math.inf  # last time TOGETHER was confirmed (8 frames)
+        self.clap_now = False  # actual touch: palms overlapping, not just nearby
+        self.clap_seen_t = -math.inf  # last time a real clap touched
         self.mirror_t = -math.inf  # last time Mirror was detected (Ruby exclusion)
+        self.ruby_latched = False  # stays True after clap->open until fists/loss
         self.geom: dict[int, HandGeometry] = {}
         self.pose: dict[int, Gesture] = {}
         self.motion: dict[int, MotionState] = {}
@@ -320,19 +379,47 @@ class TwoHandContext:
         self.together_now = hands_together(list(geom.values()), self.config)
         if self.together_now:
             self.together_seen_t = t
+        self.clap_now = hands_together(
+            list(geom.values()), replace(self.config, together_max_ratio=self.config.clap_max_ratio)
+        )
+        if self.clap_now:
+            self.clap_seen_t = t
         if self._together.update(self.together_now).state is PoseState.ACTIVE:
             self.together_active_t = t
+        # Ruby latch: set on clap->both-open; cleared on fists, hand loss,
+        # a fresh clap (new gesture starts over), or a Mirror steal.
+        if not self.both():
+            self.ruby_latched = False
+        elif self.clap_now:
+            self.ruby_latched = False
+        elif (
+            self.pose.get(0) is Gesture.CLOSED_FIST or self.pose.get(1) is Gesture.CLOSED_FIST
+        ):
+            self.ruby_latched = False
+        elif self.pose.get(0) is Gesture.NONE or self.pose.get(1) is Gesture.NONE:
+            self.ruby_latched = False
+        elif (
+            not self.clap_now
+            and self.t - self.clap_seen_t < RUBY_CLAP_WINDOW
+            and self.t - self.mirror_t > RUBY_MIRROR_COOLDOWN
+            and self.pose.get(0) is Gesture.OPEN_PALM
+            and self.pose.get(1) is Gesture.OPEN_PALM
+        ):
+            self.ruby_latched = True
         if is_mirror(self):  # remember Mirror so Ruby doesn't fire right after it
             self.mirror_t = t
+            self.ruby_latched = False  # a wide pull steals ownership from Ruby
 
     def both(self) -> bool:
         return all(i in self.geom and i in self.motion and i in self.pose for i in (0, 1))
 
 
 # Mirror Dimension
-# TOGETHER (8 frames) -> distance growing + vx of opposite signs + vy small
+# TOGETHER (8 frames) -> hands FAR apart on the x axis + moving apart horizontally.
+# A small parting (1-2 widths, Ruby's range) must never trigger it.
 MIRROR_WINDOW = 0.8  # s after a confirmed TOGETHER during which the pull can start
 MIRROR_MIN_APART = 0.8  # hand-sizes per second the distance must grow
+MIRROR_MIN_DIST = 2.5  # palms must be this many hand-sizes apart (wide pull)
 
 
 def mirror_metrics(ctx: TwoHandContext) -> tuple[float, bool, bool] | None:
@@ -354,30 +441,48 @@ def mirror_metrics(ctx: TwoHandContext) -> tuple[float, bool, bool] | None:
 
 
 def is_mirror(ctx: TwoHandContext) -> bool:
-    if ctx.t - ctx.together_active_t > MIRROR_WINDOW:  # TOGETHER must have just ended
+    # Ruby zone: both palms open and still close -> never Mirror, even if the
+    # pull-apart velocity spikes. Past MIRROR_MIN_DIST a fast wide pull steals
+    # ownership (and unlatches Ruby in observe()).
+    # Armed by a held-together (8 frames) OR a quick clap touch: either way the
+    # wide pull must start within the window after the hands were together.
+    together_armed = ctx.t - ctx.together_active_t <= MIRROR_WINDOW
+    clap_armed = ctx.t - ctx.clap_seen_t <= MIRROR_WINDOW
+    if not (together_armed or clap_armed):
         return False
     m = mirror_metrics(ctx)
     if m is None:
         return False
     apart, opposite, horizontal = m
-    return apart > MIRROR_MIN_APART and opposite and horizontal
+    if not (apart > MIRROR_MIN_APART and opposite and horizontal):
+        return False
+    a, b = ctx.geom[0], ctx.geom[1]
+    size = (a.hand_size_px + b.hand_size_px) / 2
+    if size < 1e-6:
+        return False
+    dist = distance(np.array(a.palm_center_px), np.array(b.palm_center_px)) / size
+    if dist <= MIRROR_MIN_DIST:
+        return False
+    return True
+
+
+# Actual clap: palms touching/overlapping (tighter than "together").
+
+
+def is_clap(ctx: TwoHandContext) -> bool:
+    return ctx.clap_now
 
 
 # Ruby Rings
-# together burst (history) -> both hands OPEN_PALM within < 1 s
+# real clap -> both hands OPEN_PALM within < 1 s
 RUBY_CLAP_WINDOW = 1.0  # s: the clap must have happened less than this ago
 RUBY_MIRROR_COOLDOWN = 1.5  # s: no Ruby right after a Mirror (same hand motion)
 
 
 def is_ruby(ctx: TwoHandContext) -> bool:
-    return (
-        ctx.both()
-        and not ctx.together_now
-        and ctx.t - ctx.together_seen_t < RUBY_CLAP_WINDOW
-        and ctx.t - ctx.mirror_t > RUBY_MIRROR_COOLDOWN
-        and ctx.pose[0] is Gesture.OPEN_PALM
-        and ctx.pose[1] is Gesture.OPEN_PALM
-    )
+    # Latched in observe(): on after clap->both-open, off on both fists/loss.
+    # While touching (clap) report False so the CLAP flag owns the screen.
+    return bool(ctx.ruby_latched and not ctx.clap_now)
 
 
 # Dr Strange Portal
@@ -386,17 +491,21 @@ def is_ruby(ctx: TwoHandContext) -> bool:
 PORTAL_MIN_SPEED = 1.0  # hand-sizes/s
 
 
-def is_portal(ctx: TwoHandContext) -> bool:
+def portal_roles(ctx: TwoHandContext) -> tuple[int, int] | None:
     if not ctx.both():
-        return False
+        return None
     for peace, mover in ((0, 1), (1, 0)):
         size = ctx.geom[mover].hand_size_px
         if size < 1e-6:  # avoids ZeroDivisionError
             continue
         if (
-            ctx.pose[peace] is Gesture.PEACE
+            ctx.pose.get(peace) is Gesture.PEACE
             and ctx.motion[peace].is_stationary
             and ctx.motion[mover].speed_px_s / size > PORTAL_MIN_SPEED
         ):
-            return True
-    return False
+            return peace, mover
+    return None
+
+
+def is_portal(ctx: TwoHandContext) -> bool:
+    return portal_roles(ctx) is not None
