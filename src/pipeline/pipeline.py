@@ -125,10 +125,16 @@ class Pipeline:
         self.context = ctx = TwoHandContext(ctx_config)
         spell_cfg = replace(cfg.gesture_config, stability=cfg.spell_stability)
         mirror_cfg = replace(cfg.gesture_config, stability=cfg.mirror_stability)
+        # Ruby latches until fists/loss: fast on, very slow off so brief
+        # flicker cannot drop it (the latch itself is the off switch).
+        ruby_cfg = replace(
+            cfg.gesture_config,
+            stability=replace(cfg.spell_stability, exit_frames=30),
+        )
         self.detectors: dict[str, SpellDetector] = {
             "CLAP": SpellDetector(lambda g, c: is_clap(ctx), mirror_cfg),
             "MIRROR": SpellDetector(lambda g, c: is_mirror(ctx), mirror_cfg),
-            "RUBY": SpellDetector(lambda g, c: is_ruby(ctx), spell_cfg),
+            "RUBY": SpellDetector(lambda g, c: is_ruby(ctx), ruby_cfg),
             "PORTAL": SpellDetector(lambda g, c: is_portal(ctx), spell_cfg),
         }
 

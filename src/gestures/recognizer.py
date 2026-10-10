@@ -363,6 +363,7 @@ class TwoHandContext:
         self.clap_now = False  # actual touch: palms overlapping, not just nearby
         self.clap_seen_t = -math.inf  # last time a real clap touched
         self.mirror_t = -math.inf  # last time Mirror was detected (Ruby exclusion)
+        self.ruby_latched = False  # stays True after clap->open until fists/loss
         self.geom: dict[int, HandGeometry] = {}
         self.pose: dict[int, Gesture] = {}
         self.motion: dict[int, MotionState] = {}
@@ -385,6 +386,19 @@ class TwoHandContext:
             self.clap_seen_t = t
         if self._together.update(self.together_now).state is PoseState.ACTIVE:
             self.together_active_t = t
+        # Ruby latch: set on clap->both-open, cleared on fists or hand loss.
+        if not self.both():
+            self.ruby_latched = False
+        elif self.pose.get(0) is Gesture.CLOSED_FIST and self.pose.get(1) is Gesture.CLOSED_FIST:
+            self.ruby_latched = False
+        elif (
+            not self.clap_now
+            and self.t - self.clap_seen_t < RUBY_CLAP_WINDOW
+            and self.t - self.mirror_t > RUBY_MIRROR_COOLDOWN
+            and self.pose.get(0) is Gesture.OPEN_PALM
+            and self.pose.get(1) is Gesture.OPEN_PALM
+        ):
+            self.ruby_latched = True
         if is_mirror(self):  # remember Mirror so Ruby doesn't fire right after it
             self.mirror_t = t
 
@@ -393,9 +407,11 @@ class TwoHandContext:
 
 
 # Mirror Dimension
-# TOGETHER (8 frames) -> distance growing + vx of opposite signs + vy small
+# TOGETHER (8 frames) -> hands FAR apart on the x axis + moving apart horizontally.
+# A small parting (1-2 widths, Ruby's range) must never trigger it.
 MIRROR_WINDOW = 0.8  # s after a confirmed TOGETHER during which the pull can start
 MIRROR_MIN_APART = 0.8  # hand-sizes per second the distance must grow
+MIRROR_MIN_DIST = 2.5  # palms must be this many hand-sizes apart (wide pull)
 
 
 def mirror_metrics(ctx: TwoHandContext) -> tuple[float, bool, bool] | None:
@@ -422,13 +438,24 @@ def is_mirror(ctx: TwoHandContext) -> bool:
     # lose whenever its pose confirms a frame later than Mirror's motion.
     if ctx.pose.get(0) is Gesture.OPEN_PALM and ctx.pose.get(1) is Gesture.OPEN_PALM:
         return False
+    # A latched Ruby owns both open hands until fists/loss: never steal it.
+    if ctx.ruby_latched:
+        return False
     if ctx.t - ctx.together_active_t > MIRROR_WINDOW:  # TOGETHER must have just ended
         return False
     m = mirror_metrics(ctx)
     if m is None:
         return False
     apart, opposite, horizontal = m
-    return apart > MIRROR_MIN_APART and opposite and horizontal
+    if not (apart > MIRROR_MIN_APART and opposite and horizontal):
+        return False
+    # Wide pull only: palms must actually be far apart on screen.
+    a, b = ctx.geom[0], ctx.geom[1]
+    size = (a.hand_size_px + b.hand_size_px) / 2
+    if size < 1e-6:
+        return False
+    dist = distance(np.array(a.palm_center_px), np.array(b.palm_center_px)) / size
+    return dist > MIRROR_MIN_DIST
 
 
 # Actual clap: palms touching/overlapping (tighter than "together").
@@ -445,14 +472,9 @@ RUBY_MIRROR_COOLDOWN = 1.5  # s: no Ruby right after a Mirror (same hand motion)
 
 
 def is_ruby(ctx: TwoHandContext) -> bool:
-    return (
-        ctx.both()
-        and not ctx.clap_now
-        and ctx.t - ctx.clap_seen_t < RUBY_CLAP_WINDOW
-        and ctx.t - ctx.mirror_t > RUBY_MIRROR_COOLDOWN
-        and ctx.pose.get(0) is Gesture.OPEN_PALM
-        and ctx.pose.get(1) is Gesture.OPEN_PALM
-    )
+    # Latched in observe(): on after clap->both-open, off on both fists/loss.
+    # While touching (clap) report False so the CLAP flag owns the screen.
+    return bool(ctx.ruby_latched and not ctx.clap_now)
 
 
 # Dr Strange Portal
