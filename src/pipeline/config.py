@@ -37,14 +37,20 @@ class PipelineConfig:
     spells: dict[str, SpellConfig] = field(default_factory=make_spells)
 
     # spell media (paths relative to the project root, or absolute)
+
     shield_video: str = "assets/spells/DR.STRANGE Shield.mp4"  # drawn on every confirmed open palm
-    portal_image: str = "assets/spells/school_of_ai_door.jpg"  # shown between the hands on PORTAL
+    portal_video: str = "assets/spells/portal_vfx.mp4"  # green-screen VFX shown on PORTAL
+    portal_scale: float = 1.0  # multiplies the portal size (the drawn circle's diameter)
 
     # two-hand spells (Mirror, Ruby, Portal)
     # "together" = palm centers within this many hand sizes. ~1.2 means the
     # palms touch/overlap; 2.5 kept hands "together" long after they parted,
     # which blocked Ruby (needs NOT together) while Mirror still fired.
+    mirror_shards: int = 170  # number of glass shards (100 = bigger pieces, 250 = fine shatter)
+    mirror_region: float = 2.2  # radius of the break zone around each hand, in hand sizes
+    mirror_hold_seconds: float = 4.0  # how long the mirror dimension lasts
     together_max_ratio: float = 1.2
+    portal_hold_seconds: float = 5.0  # how long the portal stays after it opens
     spell_stability: StabilityConfig = field(
         default_factory=lambda: StabilityConfig(enter_frames=2, confirm_frames=3, exit_frames=3)
     )

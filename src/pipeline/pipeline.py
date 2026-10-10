@@ -9,7 +9,9 @@ passes data between them, measures time and cleans up.
 """
 
 from __future__ import annotations
-
+from src.rendering.overlays import ChromaVideo, Fader, VideoSpell
+from src.rendering.overlays import ChromaVideo, Fader, MirrorDimension, VideoSpell
+from src.rendering.overlays import ChromaVideo, Fader, GlassShatter, VideoSpell
 import time
 from collections import deque
 from collections.abc import Callable
@@ -90,6 +92,17 @@ class Pipeline:
         """
         self.config = cfg = config or PipelineConfig()
         self._clock = clock
+        self._portal_hold_until = -1.0  # animation time when the portal should start fading out
+        self._portal_start_t = (
+            0.0  # animation time when the current portal opened (video starts here)
+        )
+
+        self.mirror_fx = GlassShatter(shards=cfg.mirror_shards, region_mult=cfg.mirror_region)
+        self._mirror_fade = Fader(frames_in=2, frames_out=12)
+        self._mirror_running = False  # True from MIRROR ACTIVE until the fade-out ends
+        self._mirror_start_t = 0.0
+        self._mirror_hold_until = -1.0
+        self._mirror_centers: list[tuple[float, float]] = []  # last known hand positions
 
         self.capture = capture or Capture(
             cfg.camera_id, cfg.frame_width, cfg.frame_height, cfg.target_fps
@@ -109,13 +122,14 @@ class Pipeline:
         # A missing file raises FileNotFoundError, like a missing model does.
         try:
             self.shield_video = VideoSpell(PROJECT_ROOT / cfg.shield_video)
-            self.portal_image = ImagePortal(PROJECT_ROOT / cfg.portal_image)
+            self.portal_video = ChromaVideo(PROJECT_ROOT / cfg.portal_video)
         except Exception:
             self.capture.release()  # same cleanup as when the tracker fails
             self.tracker.close()
             raise
         self._portal_fade = Fader()
         self._portal_anchor = (0.0, 0.0, 0.0)  # x, y, height: kept so the fade-out has a place
+        self._portal_locked = False  # True from PORTAL ACTIVE until the fade-out ends
 
         self.recognizer = GestureRecognizer(cfg.gesture_config)
         self.motion = MotionAnalyzer(cfg.motion_config)
@@ -206,6 +220,24 @@ class Pipeline:
         }
         # Only one two-hand flag is ever ACTIVE (PORTAL > RUBY > MIRROR).
         active = arbitrate_spells(raw_active)
+        # Mirror dimension: reality shatters like glass around the hands. Drawn BEFORE
+        # shields/portal, so they stay intact on top of the broken image.
+        live = [self.context.geom[i].palm_center_px for i in (0, 1) if i in self.context.geom]
+        if live:
+            self._mirror_centers = live  # the zone follows the hands (keeps the last known)
+        if active["MIRROR"] and not self._mirror_running and len(live) == 2:
+            size = sum(self.context.geom[i].hand_size_px for i in (0, 1)) / 2
+            self.mirror_fx.start(live, size, frame.shape)  # new random shards
+            self._mirror_running = True
+            self._mirror_start_t = anim_time
+            self._mirror_hold_until = anim_time + cfg.mirror_hold_seconds
+        mirror_visible = self._mirror_running and anim_time < self._mirror_hold_until
+        mirror_level = self._mirror_fade.step(mirror_visible)
+        if mirror_level <= 0.0 and not mirror_visible:
+            self._mirror_running = False  # fully gone: the next pull can start a new one
+        self.mirror_fx.draw(
+            frame, anim_time - self._mirror_start_t, mirror_level, self._mirror_centers
+        )
 
         # rendering: one shield per confirmed open palm, plus fading ghosts of lost hands.
         # A two-hand spell suppresses new shields so Ruby (both palms open)
@@ -259,8 +291,11 @@ class Pipeline:
         # portal: the door opens on the circle drawn by the moving hand and fades
         # out when the pose ends. Track the drawer's path continuously so the
         # door is already placed on the first ACTIVE frame instead of popping.
+        portal_on = active["PORTAL"]
+
+        # Follow the drawn circle only until PORTAL is confirmed, then freeze it.
         roles = portal_roles(self.context)
-        if roles is not None and len(geometries) == 2:
+        if not self._portal_locked and roles is not None and len(geometries) == 2:
             _, mover = roles
             mover_motion = motions.get(mover)
             trail = mover_motion.trajectory if mover_motion is not None else []
@@ -268,22 +303,37 @@ class Pipeline:
                 recent = trail[-30:]
                 cx = sum(p[0] for p in recent) / len(recent)
                 cy = sum(p[1] for p in recent) / len(recent)
-                spread = max(
-                    abs(p[0] - cx) + abs(p[1] - cy) for p in recent
-                )
+                spread = max(abs(p[0] - cx) + abs(p[1] - cy) for p in recent)
                 size = self.context.geom[mover].hand_size_px
                 if size < 1e-6:
                     size = 100.0
-                # Circle diameter from the drawn path, at least 2 hand sizes.
                 height = max(2.0 * spread, 2.0 * size)
             else:
                 palm = self.context.geom[mover].palm_center_px
                 cx, cy = float(palm[0]), float(palm[1])
                 height = 4.0 * float(self.context.geom[mover].hand_size_px)
             self._portal_anchor = (cx, cy, height)
-        portal_level = self._portal_fade.step(active["PORTAL"])
+
+        # First ACTIVE frame: freeze the anchor and start the 5 s timer.
+        if portal_on and not self._portal_locked:
+            self._portal_locked = True
+            self._portal_start_t = anim_time
+            self._portal_hold_until = anim_time + cfg.portal_hold_seconds
+
+        # Visible while the pose is on OR the timer has not run out.
+        portal_visible = portal_on or anim_time < self._portal_hold_until
+        portal_level = self._portal_fade.step(portal_visible)
+        if portal_level <= 0.0 and not portal_visible:
+            self._portal_locked = False  # fully gone: the next portal can be placed fresh
+
         px, py, portal_height = self._portal_anchor
-        self.portal_image.draw(frame, (px, py), portal_height, portal_level)
+        self.portal_video.draw(
+            frame,
+            (px, py),
+            portal_height * cfg.portal_scale,
+            anim_time - self._portal_start_t,
+            portal_level,
+        )
 
         self.state = PipelineState(
             frame=frame,
