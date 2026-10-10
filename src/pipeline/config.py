@@ -45,9 +45,10 @@ class PipelineConfig:
     spell_stability: StabilityConfig = field(
         default_factory=lambda: StabilityConfig(enter_frames=2, confirm_frames=3, exit_frames=3)
     )
-    # Mirror is a short burst: turns on fast, stays on ~8 frames after
+    # Mirror is a short burst: turns on fast, turns off fast too (same exit
+    # as the other spells so it cannot linger 8 frames over Ruby/Portal).
     mirror_stability: StabilityConfig = field(
-        default_factory=lambda: StabilityConfig(enter_frames=1, confirm_frames=1, exit_frames=8)
+        default_factory=lambda: StabilityConfig(enter_frames=1, confirm_frames=1, exit_frames=3)
     )
 
     # display
