@@ -28,6 +28,7 @@ from src.geometry.calculator import GeometryCalculator, GeometryConfig
 from src.gestures.recognizer import (
     Gesture,
     GestureRecognizer,
+    GestureState,
     PoseState,
     SpellDetector,
     TwoHandContext,
@@ -54,6 +55,19 @@ from src.utils.drawing import draw_debug_overlay
 Frame = NDArray[np.uint8]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# Priority when several two-hand detectors fire on the same frame
+# (Ruby's pull-apart motion is a subset of Mirror's). Only one flag
+# is ever reported ACTIVE so the overlay is unambiguous.
+SPELL_PRIORITY = ("PORTAL", "RUBY", "MIRROR")
+
+
+def arbitrate_spells(raw_active: dict[str, bool]) -> dict[str, bool]:
+    """Keep only the highest-priority ACTIVE spell, turn the rest off."""
+    for name in SPELL_PRIORITY:
+        if raw_active.get(name, False):
+            return {k: (k == name) for k in raw_active}
+    return dict(raw_active)
 
 
 class Pipeline:
@@ -174,17 +188,36 @@ class Pipeline:
 
         # two-hand spells: call every frame, even with no hands, so timers keep running
         self.context.observe(anim_time, by_id, raw, motions)
-        active = {
+        raw_active = {
             name: det.update(geometries).state is PoseState.ACTIVE
             for name, det in self.detectors.items()
         }
+        # Only one two-hand flag is ever ACTIVE (PORTAL > RUBY > MIRROR).
+        active = arbitrate_spells(raw_active)
 
-        # rendering: one shield per confirmed open palm, plus fading ghosts of lost hands
+        # rendering: one shield per confirmed open palm, plus fading ghosts of lost hands.
+        # A two-hand spell suppresses new shields so Ruby (both palms open)
+        # does not draw 2 shields + a label at the same time.
+        two_hand_on = any(active.values())
         spells: list[tuple[SpellTransform, Any]] = []
         seen: set[int] = set()
         for g, geo in zip(states, geometries, strict=True):
             spell_id = SPELL_FOR.get(g.gesture)
             if spell_id is None:
+                continue
+            if two_hand_on and g.hand_id in by_id:
+                # Suppress new shields while a two-hand spell owns the screen;
+                # still step the shield fade down so it resumes cleanly afterwards.
+                # Mark as seen so no ghost is spawned for it this frame.
+                renderer.compute_transform(
+                    geo,
+                    to_active(GestureState(Gesture.NONE, 0.0, 0, g.hand_id)),
+                    motions.get(g.hand_id),
+                    anim_time,
+                    hand_id=g.hand_id,
+                    spell_id=spell_id,
+                )
+                seen.add(g.hand_id)
                 continue
             transform = renderer.compute_transform(
                 geo,
