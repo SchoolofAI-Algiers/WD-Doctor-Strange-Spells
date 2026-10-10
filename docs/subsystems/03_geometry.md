@@ -152,10 +152,10 @@ Tests live in `tests/` and run with `pytest`.
 | `distance` | 3-4-5 triangle, same point, symmetry, negative coordinates | written |
 | `hand_size` | each method, default method, wrist away from origin, invalid method raises `ValueError` | written |
 | `palm_orientation` | four cardinal directions (parametrized), diagonal, landmark 9 away from origin | written |
-| `palm_center` | each strategy on a known configuration, weighted strategy gives the middle MCP double weight, invalid strategy raises | todo |
+| `palm_center` | each strategy on a known configuration, weighted strategy gives the middle MCP double weight, invalid strategy raises | written |
 | `norm2px` | known scaling, z column dropped | todo |
-| `landmark_normalization` | wrist at origin, scale by hand size, zeros when size is `0` | todo |
-| `GeometryCalculator.compute` | full `HandGeometry` for a known hand, config is respected | todo |
+| `landmark_normalization` | wrist at origin, scale by hand size, zeros when size is `0` | written |
+| `GeometryCalculator.compute` | full `HandGeometry` for a known hand, config is respected | written |
 
 - **Unit:** known landmark configurations -> expected geometry values.
 - **Property:** `landmarks_norm` is invariant to translating the whole hand and to scaling it (same output for the same hand at different positions and distances).
