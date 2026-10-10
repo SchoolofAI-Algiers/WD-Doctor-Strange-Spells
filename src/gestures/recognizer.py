@@ -50,6 +50,13 @@ class GestureConfig:
     # true open palm still needs all four clearly out. Slightly above
     # finger_threshold on purpose so Peace is easier than Open.
     peace_curl_max_ratio: float = 1.65
+    # An edge-on hand (palm seen from the side) collapses the knuckle span:
+    # width(5-17) / length(0-9) drops toward 0. Below this it is not an open
+    # palm no matter how straight the fingers read.
+    palm_min_facing_ratio: float = 0.45
+    # Actual clap = palms touching/overlapping, much tighter than "together"
+    # (which is just nearby). Ruby re-arms on a clap, not on proximity.
+    clap_max_ratio: float = 0.7
     together_max_ratio: float = 1.0
     stability: StabilityConfig = field(default_factory=StabilityConfig)
     pinch_max_ratio: float = 0.3
@@ -113,6 +120,20 @@ def extended_fingers(landmarks_norm: FloatArray, config: GestureConfig) -> froze
     )
 
 
+def palm_facing_ratio(landmarks_norm: FloatArray) -> float:
+    """Knuckle span vs palm length, scale-invariant (1 = frontal, 0 = edge-on)."""
+    width = distance(landmarks_norm[5], landmarks_norm[17])
+    length = distance(landmarks_norm[0], landmarks_norm[9])
+    if length < 1e-9:
+        return 0.0
+    return width / length
+
+
+def is_palm_frontal(landmarks_norm: FloatArray, config: GestureConfig) -> bool:
+    """True when the palm (or back of hand) faces the camera, not edge-on."""
+    return palm_facing_ratio(landmarks_norm) >= config.palm_min_facing_ratio
+
+
 def is_thumb_middle_pinch(geometry: HandGeometry, config: GestureConfig | None = None) -> bool:
     config = config or GestureConfig()
     if geometry.hand_size_norm < config.min_hand_size_norm:
@@ -144,7 +165,11 @@ def classify_hand(geometry: HandGeometry, config: GestureConfig | None = None) -
     if is_peace_pose(geometry.landmarks_norm, config):
         return Gesture.PEACE
     if len(others) == 4:
-        return Gesture.OPEN_PALM
+        # Four straight fingers only count when the palm faces the camera:
+        # edge-on hands read extended but must not trigger a shield.
+        if is_palm_frontal(geometry.landmarks_norm, config):
+            return Gesture.OPEN_PALM
+        return Gesture.NONE
     if others == frozenset({"index"}):
         return Gesture.POINTING
     if others == frozenset({"index", "middle"}):
