@@ -386,8 +386,11 @@ class TwoHandContext:
             self.clap_seen_t = t
         if self._together.update(self.together_now).state is PoseState.ACTIVE:
             self.together_active_t = t
-        # Ruby latch: set on clap->both-open, cleared on fists or hand loss.
+        # Ruby latch: set on clap->both-open; cleared on fists, hand loss,
+        # a fresh clap (new gesture starts over), or a Mirror steal.
         if not self.both():
+            self.ruby_latched = False
+        elif self.clap_now:
             self.ruby_latched = False
         elif self.pose.get(0) is Gesture.CLOSED_FIST and self.pose.get(1) is Gesture.CLOSED_FIST:
             self.ruby_latched = False
@@ -401,6 +404,7 @@ class TwoHandContext:
             self.ruby_latched = True
         if is_mirror(self):  # remember Mirror so Ruby doesn't fire right after it
             self.mirror_t = t
+            self.ruby_latched = False  # a wide pull steals ownership from Ruby
 
     def both(self) -> bool:
         return all(i in self.geom and i in self.motion and i in self.pose for i in (0, 1))
@@ -433,15 +437,14 @@ def mirror_metrics(ctx: TwoHandContext) -> tuple[float, bool, bool] | None:
 
 
 def is_mirror(ctx: TwoHandContext) -> bool:
-    # Ruby owns the both-palms-open pull-apart: without this guard the same
-    # motion satisfies both detectors and (with arbitration) Ruby would still
-    # lose whenever its pose confirms a frame later than Mirror's motion.
-    if ctx.pose.get(0) is Gesture.OPEN_PALM and ctx.pose.get(1) is Gesture.OPEN_PALM:
-        return False
-    # A latched Ruby owns both open hands until fists/loss: never steal it.
-    if ctx.ruby_latched:
-        return False
-    if ctx.t - ctx.together_active_t > MIRROR_WINDOW:  # TOGETHER must have just ended
+    # Ruby zone: both palms open and still close -> never Mirror, even if the
+    # pull-apart velocity spikes. Past MIRROR_MIN_DIST a fast wide pull steals
+    # ownership (and unlatches Ruby in observe()).
+    # Armed by a held-together (8 frames) OR a quick clap touch: either way the
+    # wide pull must start within the window after the hands were together.
+    together_armed = ctx.t - ctx.together_active_t <= MIRROR_WINDOW
+    clap_armed = ctx.t - ctx.clap_seen_t <= MIRROR_WINDOW
+    if not (together_armed or clap_armed):
         return False
     m = mirror_metrics(ctx)
     if m is None:
@@ -449,13 +452,14 @@ def is_mirror(ctx: TwoHandContext) -> bool:
     apart, opposite, horizontal = m
     if not (apart > MIRROR_MIN_APART and opposite and horizontal):
         return False
-    # Wide pull only: palms must actually be far apart on screen.
     a, b = ctx.geom[0], ctx.geom[1]
     size = (a.hand_size_px + b.hand_size_px) / 2
     if size < 1e-6:
         return False
     dist = distance(np.array(a.palm_center_px), np.array(b.palm_center_px)) / size
-    return dist > MIRROR_MIN_DIST
+    if dist <= MIRROR_MIN_DIST:
+        return False
+    return True
 
 
 # Actual clap: palms touching/overlapping (tighter than "together").
