@@ -246,8 +246,10 @@ class Pipeline:
                 transform.opacity,
             )
 
-        # portal: the door photo opens between the two hands and fades out when it ends
-        if active["PORTAL"] and len(geometries) == 2:
+        # portal: the door photo opens between the two hands and fades out when it ends.
+        # Track the midpoint continuously (not only while ACTIVE) so the door is
+        # already in place on the first ACTIVE frame instead of popping in.
+        if len(geometries) == 2:
             a, b = geometries
             self._portal_anchor = (
                 (a.palm_center_px[0] + b.palm_center_px[0]) / 2,
