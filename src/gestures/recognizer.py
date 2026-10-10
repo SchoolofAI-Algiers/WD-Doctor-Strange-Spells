@@ -422,17 +422,21 @@ def is_ruby(ctx: TwoHandContext) -> bool:
 PORTAL_MIN_SPEED = 1.0  # hand-sizes/s
 
 
-def is_portal(ctx: TwoHandContext) -> bool:
+def portal_roles(ctx: TwoHandContext) -> tuple[int, int] | None:
     if not ctx.both():
-        return False
+        return None
     for peace, mover in ((0, 1), (1, 0)):
         size = ctx.geom[mover].hand_size_px
         if size < 1e-6:  # avoids ZeroDivisionError
             continue
         if (
-            ctx.pose[peace] is Gesture.PEACE
+            ctx.pose.get(peace) is Gesture.PEACE
             and ctx.motion[peace].is_stationary
             and ctx.motion[mover].speed_px_s / size > PORTAL_MIN_SPEED
         ):
-            return True
-    return False
+            return peace, mover
+    return None
+
+
+def is_portal(ctx: TwoHandContext) -> bool:
+    return portal_roles(ctx) is not None

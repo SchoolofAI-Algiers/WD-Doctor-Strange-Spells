@@ -37,6 +37,7 @@ from src.gestures.recognizer import (
     is_portal,
     is_ruby,
     mirror_metrics,
+    portal_roles,
 )
 from src.motion.analyzer import INDEX_TIP, MotionAnalyzer, MotionState
 from src.pipeline.config import PipelineConfig
@@ -247,16 +248,31 @@ class Pipeline:
                 transform.opacity,
             )
 
-        # portal: the door photo opens between the two hands and fades out when it ends.
-        # Track the midpoint continuously (not only while ACTIVE) so the door is
-        # already in place on the first ACTIVE frame instead of popping in.
-        if len(geometries) == 2:
-            a, b = geometries
-            self._portal_anchor = (
-                (a.palm_center_px[0] + b.palm_center_px[0]) / 2,
-                (a.palm_center_px[1] + b.palm_center_px[1]) / 2,
-                4.0 * (a.hand_size_px + b.hand_size_px) / 2,
-            )
+        # portal: the door opens on the circle drawn by the moving hand and fades
+        # out when the pose ends. Track the drawer's path continuously so the
+        # door is already placed on the first ACTIVE frame instead of popping.
+        roles = portal_roles(self.context)
+        if roles is not None and len(geometries) == 2:
+            _, mover = roles
+            mover_motion = motions.get(mover)
+            trail = mover_motion.trajectory if mover_motion is not None else []
+            if len(trail) >= 10:
+                recent = trail[-30:]
+                cx = sum(p[0] for p in recent) / len(recent)
+                cy = sum(p[1] for p in recent) / len(recent)
+                spread = max(
+                    abs(p[0] - cx) + abs(p[1] - cy) for p in recent
+                )
+                size = self.context.geom[mover].hand_size_px
+                if size < 1e-6:
+                    size = 100.0
+                # Circle diameter from the drawn path, at least 2 hand sizes.
+                height = max(2.0 * spread, 2.0 * size)
+            else:
+                palm = self.context.geom[mover].palm_center_px
+                cx, cy = float(palm[0]), float(palm[1])
+                height = 4.0 * float(self.context.geom[mover].hand_size_px)
+            self._portal_anchor = (cx, cy, height)
         portal_level = self._portal_fade.step(active["PORTAL"])
         px, py, portal_height = self._portal_anchor
         self.portal_image.draw(frame, (px, py), portal_height, portal_level)
