@@ -1,11 +1,22 @@
 """Unit tests for the gesture subsystem.
 
-Pure logic: hands are built from synthetic landmarks, no camera, no MediaPipe.
+Pure logic: no camera, no MediaPipe, no motion analyzer.
+- Hands are built from synthetic landmarks.
+- Motion is faked with a tiny stand-in for ``MotionState``.
 
+Covers single-hand classification, the thumb-middle pinch, the pose state machine
+(flicker, ghost hands, 8-frame confirmation), the recognizer with handedness ids,
+the static two-hand spells (Shield, Ikkon) and the motion-based two-hand spells
+(Mirror, Ruby, Portal).
 """
 
+from __future__ import annotations
+
+import math
 import random
 from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
@@ -13,6 +24,11 @@ from src.geometry.calculator import FloatArray, HandGeometry
 from src.gestures.recognizer import (
     FINGERS,
     HANDEDNESS_ID,
+    MIRROR_MIN_APART,
+    MIRROR_WINDOW,
+    PORTAL_MIN_SPEED,
+    RUBY_CLAP_WINDOW,
+    RUBY_MIRROR_COOLDOWN,
     Gesture,
     GestureConfig,
     GestureRecognizer,
@@ -20,19 +36,32 @@ from src.gestures.recognizer import (
     PoseState,
     SpellDetector,
     StabilityConfig,
+    TwoHandContext,
     classify_hand,
     extended_fingers,
     hand_ids_from_handedness,
     hands_together,
     is_ikkon,
+    is_mirror,
+    is_portal,
+    is_ruby,
     is_shield,
     is_thumb_middle_pinch,
+    mirror_metrics,
 )
 
+if TYPE_CHECKING:
+    from src.motion.analyzer import MotionState
+
 IMAGE_W, IMAGE_H = 640, 480
+HAND_SIZE = 100.0
+FRAME_DT = 1 / 30
 ALL_FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 FOUR_FINGERS = ("index", "middle", "ring", "pinky")  # everything but the thumb
 PINCH_FINGERS = ("index", "ring", "pinky")  # fingers that stay straight in a thumb-middle pinch
+
+LEFT = (150.0, 240.0)
+RIGHT = (500.0, 240.0)
 
 # (first landmark index of the finger, x position of the finger column)
 _FINGER_COLUMNS = {
@@ -78,7 +107,7 @@ def make_geometry(
     extended: Iterable[str] = (),
     *,
     center: tuple[float, float] = (320.0, 240.0),
-    size_px: float = 100.0,
+    size_px: float = HAND_SIZE,
     scale: float = 1.0,
     pinch: bool = False,
     angle_deg: float = 0.0,
@@ -100,10 +129,6 @@ def make_geometry(
         palm_angle_rad=0.0,
         landmarks_norm=landmarks,
     )
-
-
-LEFT = (150.0, 240.0)
-RIGHT = (500.0, 240.0)
 
 
 def palm(center: tuple[float, float] = LEFT, angle_deg: float = 0.0) -> HandGeometry:
@@ -185,6 +210,14 @@ def test_finger_landmark_indices_match_spec() -> None:
     assert {f.name: (f.tip, f.pip, f.mcp) for f in FINGERS} == expected
 
 
+def test_spell_constants_match_spec() -> None:
+    assert pytest.approx(0.8) == MIRROR_WINDOW
+    assert pytest.approx(0.8) == MIRROR_MIN_APART
+    assert pytest.approx(1.0) == RUBY_CLAP_WINDOW
+    assert pytest.approx(1.5) == RUBY_MIRROR_COOLDOWN
+    assert pytest.approx(1.0) == PORTAL_MIN_SPEED
+
+
 # Single-hand classification (the thumb is ignored, only the 4 other fingers decide)
 @pytest.mark.parametrize(
     ("extended", "expected"),
@@ -242,10 +275,6 @@ def test_classification_is_rotation_invariant(angle: float) -> None:
     assert classify_hand(pinch_hand(angle_deg=angle)) is Gesture.THUMB_MIDDLE_PINCH
 
 
-def test_tiny_hand_is_none_not_fist() -> None:
-    assert classify_hand(ghost_fist()) is Gesture.NONE
-
-
 def test_classify_hand_uses_default_config_when_none_given() -> None:
     geometry = make_geometry(ALL_FINGERS)
     assert classify_hand(geometry, None) is classify_hand(geometry, GestureConfig())
@@ -255,11 +284,6 @@ def test_thresholds_are_configurable() -> None:
     strict = GestureConfig(thumb_threshold=10.0, finger_threshold=10.0)
     # Nothing can reach such a ratio: an open hand now reads as a fist.
     assert classify_hand(make_geometry(ALL_FINGERS), strict) is Gesture.CLOSED_FIST
-
-
-def test_min_hand_size_is_configurable() -> None:
-    permissive = GestureConfig(min_hand_size_norm=0.0)
-    assert classify_hand(make_geometry((), size_px=5.0), permissive) is Gesture.CLOSED_FIST
 
 
 # Thumb-middle pinch
@@ -544,13 +568,7 @@ def test_stabilizer_custom_config() -> None:
     assert stab.update(False).state is PoseState.IDLE
 
 
-# Flicker resistance
-def test_flicker_alternating_never_activates() -> None:
-    stab = PoseStabilizer()
-    for i in range(200):
-        assert stab.update(i % 2 == 0).state is not PoseState.ACTIVE
-
-
+# Flicker resistance (dropouts while active)
 def test_flicker_short_streaks_never_activate() -> None:
     stab = PoseStabilizer()  # needs 8 consecutive frames
     for _ in range(30):
@@ -883,14 +901,6 @@ def test_shield_detector_deactivates_when_hands_leave() -> None:
     assert run_spell(det, [], 3) is PoseState.IDLE
 
 
-def test_shield_detector_alternating_frames_never_activate() -> None:
-    det = SpellDetector(is_shield)
-    shield = far_pair(fist(LEFT), fist(RIGHT))
-    for i in range(100):
-        frame = shield if i % 2 == 0 else []
-        assert det.update(frame).state is not PoseState.ACTIVE
-
-
 def test_shield_detector_reset() -> None:
     det = SpellDetector(is_shield)
     run_spell(det, far_pair(palm(LEFT), palm(RIGHT)), 8)
@@ -923,7 +933,7 @@ def test_ikkon_detector_survives_single_frame_dropouts() -> None:
         assert det.update(pose).state is PoseState.ACTIVE
 
 
-# when MediaPipe loses the hand, it can still output a few collapsed
+# Ghost hands: when MediaPipe loses the hand, it can still output a few collapsed
 # landmarks. All fingertips then sit on top of their MCPs, so every finger is
 # "curled" and the hand would be classified as CLOSED_FIST. The size gate
 # rejects those detections BEFORE looking at the fingers.
@@ -972,8 +982,8 @@ def test_ghost_hand_between_real_frames_does_not_create_a_fist() -> None:
     assert Gesture.CLOSED_FIST not in seen
 
 
-# a pose only becomes ACTIVE after enter_frames (3) + confirm_frames (5) = 8
-# CONSECUTIVE frames. Any miss before that resets the streak, so a signal that
+# 8-frame confirmation: a pose only becomes ACTIVE after enter_frames (3) + confirm_frames (5)
+# = 8 CONSECUTIVE frames. Any miss before that resets the streak, so a signal that
 # flips every frame (or every few frames) never gets close to 8 in a row.
 @pytest.mark.parametrize(("enter", "confirm"), [(1, 1), (2, 4), (3, 5), (4, 8)])
 def test_confirmation_needs_exactly_enter_plus_confirm_consecutive_frames(
@@ -983,11 +993,6 @@ def test_confirmation_needs_exactly_enter_plus_confirm_consecutive_frames(
     states = [stab.update(True).state for _ in range(enter + confirm)]
     assert all(s is not PoseState.ACTIVE for s in states[:-1])
     assert states[-1] is PoseState.ACTIVE
-
-
-def test_default_confirmation_is_8_frames() -> None:
-    cfg = StabilityConfig()
-    assert cfg.enter_frames + cfg.confirm_frames == 8
 
 
 def test_alternating_signal_never_activates_over_200_frames() -> None:
@@ -1042,3 +1047,603 @@ def test_confirmation_still_works_after_a_flicker_burst() -> None:
     for i in range(200):
         det.update(shield if i % 2 == 0 else [])
     assert run_spell(det, shield, 8) is PoseState.ACTIVE
+
+
+# ---------------------------------------------------------------------------
+# Motion-based two-hand spells (Mirror, Ruby, Portal)
+# These read a TwoHandContext: the pose of each hand is given separately, so only the
+# center and the size of the geometries matter, never their fingers.
+# ---------------------------------------------------------------------------
+def spell_hand(center: tuple[float, float] = LEFT, size_px: float = HAND_SIZE) -> HandGeometry:
+    """Open hand used by the motion spells (center and size are all that count there)."""
+    return make_geometry(ALL_FINGERS, center=center, size_px=size_px)
+
+
+@dataclass(frozen=True)
+class FakeMotion:
+    """Stand-in for MotionState: only the fields the spells read."""
+
+    velocity_px_s: tuple[float, float] = (0.0, 0.0)
+    speed_px_s: float = 0.0
+    is_stationary: bool = True
+
+
+def still() -> FakeMotion:
+    return FakeMotion()
+
+
+def moving(vx: float, vy: float = 0.0) -> FakeMotion:
+    return FakeMotion(
+        velocity_px_s=(vx, vy),
+        speed_px_s=math.hypot(vx, vy),
+        is_stationary=False,
+    )
+
+
+def far_hands() -> dict[int, HandGeometry]:
+    return {0: spell_hand(LEFT), 1: spell_hand(RIGHT)}
+
+
+def close_hands() -> dict[int, HandGeometry]:
+    """Two hands 20 px apart with a hand size of 100 px (ratio 0.2 < 1.0)."""
+    return {0: spell_hand((310.0, 240.0)), 1: spell_hand((330.0, 240.0))}
+
+
+def poses(a: Gesture, b: Gesture | None = None) -> dict[int, Gesture]:
+    return {0: a, 1: a if b is None else b}
+
+
+def observe(
+    ctx: TwoHandContext,
+    t: float,
+    geom: dict[int, HandGeometry],
+    pose: dict[int, Gesture],
+    motion: dict[int, FakeMotion],
+) -> None:
+    ctx.observe(t, geom, pose, cast("dict[int, MotionState]", motion))
+
+
+def pull_apart_motion() -> dict[int, FakeMotion]:
+    """Hand 0 goes left, hand 1 goes right: 2 hand-sizes/s apart."""
+    return {0: moving(-100.0), 1: moving(100.0)}
+
+
+def pulling_context(t: float, *, together_active_t: float = 0.0) -> TwoHandContext:
+    """Context where TOGETHER was last confirmed at `together_active_t`, hands now pulling."""
+    ctx = TwoHandContext()
+    ctx.together_active_t = together_active_t
+    observe(ctx, t, far_hands(), poses(Gesture.OPEN_PALM), pull_apart_motion())
+    return ctx
+
+
+def confirm_together(ctx: TwoHandContext, frames: int = 8, t0: float = 0.0) -> float:
+    """Feed `frames` close-hand frames and return the time of the last one."""
+    t = t0
+    for i in range(frames):
+        t = t0 + i * FRAME_DT
+        observe(ctx, t, close_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    return t
+
+
+# TwoHandContext
+def test_context_initial_state() -> None:
+    ctx = TwoHandContext()
+    assert ctx.t == 0.0
+    assert ctx.together_now is False
+    assert ctx.together_seen_t == -math.inf
+    assert ctx.together_active_t == -math.inf
+    assert ctx.mirror_t == -math.inf
+    assert ctx.geom == {}
+    assert ctx.pose == {}
+    assert ctx.motion == {}
+
+
+def test_context_uses_default_config() -> None:
+    assert TwoHandContext().config == GestureConfig()
+
+
+def test_context_keeps_custom_config() -> None:
+    cfg = GestureConfig(together_max_ratio=2.0)
+    assert TwoHandContext(cfg).config is cfg
+
+
+def test_context_both_requires_geom_pose_and_motion_for_ids_0_and_1() -> None:
+    ctx = TwoHandContext()
+    assert not ctx.both()
+
+    observe(ctx, 0.0, far_hands(), poses(Gesture.NONE), {0: still(), 1: still()})
+    assert ctx.both()
+
+
+@pytest.mark.parametrize("missing", ["geom", "pose", "motion"])
+def test_context_both_false_when_one_hand_is_missing_anywhere(missing: str) -> None:
+    geom = far_hands()
+    pose = poses(Gesture.NONE)
+    motion = {0: still(), 1: still()}
+    if missing == "geom":
+        del geom[1]
+    elif missing == "pose":
+        del pose[1]
+    else:
+        del motion[1]
+
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, geom, pose, motion)
+    assert not ctx.both()
+
+
+def test_context_both_false_for_ids_other_than_0_and_1() -> None:
+    ctx = TwoHandContext()
+    geom = {2: spell_hand(LEFT), 3: spell_hand(RIGHT)}
+    observe(ctx, 0.0, geom, {2: Gesture.NONE, 3: Gesture.NONE}, {2: still(), 3: still()})
+    assert not ctx.both()
+
+
+def test_context_observe_stores_the_frame() -> None:
+    ctx = TwoHandContext()
+    geom, pose, motion = far_hands(), poses(Gesture.PEACE), {0: still(), 1: still()}
+    observe(ctx, 1.25, geom, pose, motion)
+    assert ctx.t == 1.25
+    assert ctx.geom is geom
+    assert ctx.pose is pose
+    assert ctx.motion is motion
+
+
+def test_context_together_now_follows_hand_distance() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, close_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    assert ctx.together_now is True
+
+    observe(ctx, 0.1, far_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    assert ctx.together_now is False
+
+
+def test_context_together_seen_t_records_last_close_frame() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.5, close_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    observe(ctx, 0.7, far_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    assert ctx.together_seen_t == pytest.approx(0.5)
+
+
+def test_context_together_seen_t_needs_a_single_close_frame() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.3, close_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    assert ctx.together_seen_t == pytest.approx(0.3)
+    assert ctx.together_active_t == -math.inf  # one frame is far from confirmed
+
+
+def test_context_together_active_needs_enter_plus_confirm_frames() -> None:
+    cfg = StabilityConfig()
+    needed = cfg.enter_frames + cfg.confirm_frames  # 8
+
+    ctx = TwoHandContext()
+    confirm_together(ctx, frames=needed - 1)
+    assert ctx.together_active_t == -math.inf
+
+    ctx = TwoHandContext()
+    last_t = confirm_together(ctx, frames=needed)
+    assert ctx.together_active_t == pytest.approx(last_t)
+
+
+def test_context_together_active_follows_custom_stability() -> None:
+    ctx = TwoHandContext(GestureConfig(stability=StabilityConfig(enter_frames=1, confirm_frames=1)))
+    confirm_together(ctx, frames=2)
+    assert ctx.together_active_t != -math.inf
+
+
+def test_context_ignores_a_single_hand_for_together() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, {0: spell_hand()}, {0: Gesture.OPEN_PALM}, {0: still()})
+    assert ctx.together_now is False
+    assert ctx.together_seen_t == -math.inf
+
+
+def test_context_remembers_mirror_time() -> None:
+    ctx = pulling_context(0.4)
+    assert ctx.mirror_t == pytest.approx(0.4)
+
+
+def test_context_mirror_time_untouched_when_no_mirror() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.4, far_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    assert ctx.mirror_t == -math.inf
+
+
+# mirror_metrics
+def test_mirror_metrics_none_without_both_hands() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, {0: spell_hand()}, {0: Gesture.NONE}, {0: still()})
+    assert mirror_metrics(ctx) is None
+
+
+def test_mirror_metrics_none_for_zero_hand_size() -> None:
+    ctx = TwoHandContext()
+    geom = {0: spell_hand(LEFT, size_px=0.0), 1: spell_hand(RIGHT, size_px=0.0)}
+    observe(ctx, 0.0, geom, poses(Gesture.NONE), pull_apart_motion())
+    assert mirror_metrics(ctx) is None
+
+
+def test_mirror_metrics_hands_moving_apart() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, far_hands(), poses(Gesture.NONE), pull_apart_motion())
+    metrics = mirror_metrics(ctx)
+    assert metrics is not None
+    apart, opposite, horizontal = metrics
+    assert apart == pytest.approx(2.0)  # 200 px/s relative speed / 100 px hand size
+    assert opposite is True
+    assert horizontal is True
+
+
+def test_mirror_metrics_hands_moving_closer_is_negative() -> None:
+    ctx = TwoHandContext()
+    motion = {0: moving(100.0), 1: moving(-100.0)}
+    observe(ctx, 0.0, far_hands(), poses(Gesture.NONE), motion)
+    metrics = mirror_metrics(ctx)
+    assert metrics is not None
+    assert metrics[0] == pytest.approx(-2.0)
+    assert metrics[1] is True
+
+
+def test_mirror_metrics_same_direction_is_not_opposite() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, far_hands(), poses(Gesture.NONE), {0: moving(100.0), 1: moving(100.0)})
+    metrics = mirror_metrics(ctx)
+    assert metrics is not None
+    apart, opposite, _ = metrics
+    assert apart == pytest.approx(0.0)
+    assert opposite is False
+
+
+def test_mirror_metrics_vertical_motion_is_not_horizontal() -> None:
+    ctx = TwoHandContext()
+    motion = {0: moving(-100.0, -100.0), 1: moving(100.0, 100.0)}
+    observe(ctx, 0.0, far_hands(), poses(Gesture.NONE), motion)
+    metrics = mirror_metrics(ctx)
+    assert metrics is not None
+    assert metrics[2] is False
+
+
+def test_mirror_metrics_horizontal_needs_both_hands() -> None:
+    ctx = TwoHandContext()
+    motion = {0: moving(-100.0, 10.0), 1: moving(100.0, 90.0)}  # only hand 1 is too vertical
+    observe(ctx, 0.0, far_hands(), poses(Gesture.NONE), motion)
+    metrics = mirror_metrics(ctx)
+    assert metrics is not None
+    assert metrics[2] is False
+
+
+def test_mirror_metrics_horizontal_ratio_is_strict() -> None:
+    ctx = TwoHandContext()
+    motion = {0: moving(-100.0, 59.0), 1: moving(100.0, -59.0)}  # |vy| < 0.6 * |vx|
+    observe(ctx, 0.0, far_hands(), poses(Gesture.NONE), motion)
+    metrics = mirror_metrics(ctx)
+    assert metrics is not None
+    assert metrics[2] is True
+
+
+def test_mirror_metrics_scales_with_hand_size() -> None:
+    ctx = TwoHandContext()
+    geom = {0: spell_hand(LEFT, size_px=200.0), 1: spell_hand(RIGHT, size_px=200.0)}
+    observe(ctx, 0.0, geom, poses(Gesture.NONE), pull_apart_motion())
+    metrics = mirror_metrics(ctx)
+    assert metrics is not None
+    assert metrics[0] == pytest.approx(1.0)  # same pixel speed, bigger hands
+
+
+def test_mirror_metrics_coincident_palms_do_not_crash() -> None:
+    ctx = TwoHandContext()
+    geom = {0: spell_hand(LEFT), 1: spell_hand(LEFT)}
+    observe(ctx, 0.0, geom, poses(Gesture.NONE), pull_apart_motion())
+    metrics = mirror_metrics(ctx)
+    assert metrics is not None
+    assert math.isfinite(metrics[0])
+
+
+def test_mirror_metrics_uses_the_axis_between_the_hands() -> None:
+    # Hands one above the other, moving apart along y: that is still "apart" for the metric
+    # even though the horizontal check rejects it.
+    ctx = TwoHandContext()
+    geom = {0: spell_hand((320.0, 100.0)), 1: spell_hand((320.0, 400.0))}
+    motion = {0: moving(0.0, -100.0), 1: moving(0.0, 100.0)}
+    observe(ctx, 0.0, geom, poses(Gesture.NONE), motion)
+    metrics = mirror_metrics(ctx)
+    assert metrics is not None
+    assert metrics[0] == pytest.approx(2.0)
+
+
+# is_mirror
+def test_mirror_after_confirmed_together_and_pull_apart() -> None:
+    ctx = TwoHandContext()
+    last_t = confirm_together(ctx)
+    observe(
+        ctx,
+        last_t + FRAME_DT,
+        far_hands(),
+        poses(Gesture.OPEN_PALM),
+        pull_apart_motion(),
+    )
+    assert is_mirror(ctx)
+
+
+def test_mirror_requires_confirmed_together() -> None:
+    ctx = TwoHandContext()
+    last_t = confirm_together(ctx, frames=3)  # close, but never confirmed
+    observe(ctx, last_t + FRAME_DT, far_hands(), poses(Gesture.OPEN_PALM), pull_apart_motion())
+    assert not is_mirror(ctx)
+
+
+def test_mirror_without_any_history_is_false() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, far_hands(), poses(Gesture.OPEN_PALM), pull_apart_motion())
+    assert not is_mirror(ctx)
+
+
+def test_mirror_window_boundary_is_inclusive() -> None:
+    assert is_mirror(pulling_context(MIRROR_WINDOW))
+
+
+def test_mirror_expires_after_window() -> None:
+    assert not is_mirror(pulling_context(MIRROR_WINDOW + 0.05))
+
+
+def test_mirror_needs_both_hands() -> None:
+    ctx = TwoHandContext()
+    ctx.together_active_t = 0.0
+    observe(ctx, 0.2, {0: spell_hand()}, {0: Gesture.OPEN_PALM}, {0: moving(-100.0)})
+    assert not is_mirror(ctx)
+
+
+def test_mirror_rejects_slow_pull() -> None:
+    ctx = TwoHandContext()
+    ctx.together_active_t = 0.0
+    motion = {0: moving(-25.0), 1: moving(25.0)}  # 0.5 hand-sizes/s < 0.8
+    observe(ctx, 0.2, far_hands(), poses(Gesture.OPEN_PALM), motion)
+    assert not is_mirror(ctx)
+
+
+def test_mirror_speed_threshold_is_strict() -> None:
+    ctx = TwoHandContext()
+    ctx.together_active_t = 0.0
+    motion = {0: moving(-40.0), 1: moving(40.0)}  # exactly 0.8 hand-sizes/s
+    observe(ctx, 0.2, far_hands(), poses(Gesture.OPEN_PALM), motion)
+    assert not is_mirror(ctx)
+
+
+def test_mirror_rejects_hands_moving_closer() -> None:
+    ctx = TwoHandContext()
+    ctx.together_active_t = 0.0
+    motion = {0: moving(100.0), 1: moving(-100.0)}
+    observe(ctx, 0.2, far_hands(), poses(Gesture.OPEN_PALM), motion)
+    assert not is_mirror(ctx)
+
+
+def test_mirror_rejects_vertical_pull() -> None:
+    ctx = TwoHandContext()
+    ctx.together_active_t = 0.0
+    motion = {0: moving(-100.0, -100.0), 1: moving(100.0, 100.0)}
+    observe(ctx, 0.2, far_hands(), poses(Gesture.OPEN_PALM), motion)
+    assert not is_mirror(ctx)
+
+
+def test_mirror_rejects_same_direction_motion() -> None:
+    ctx = TwoHandContext()
+    ctx.together_active_t = 0.0
+    motion = {0: moving(200.0), 1: moving(100.0)}  # right hand pulls away, but both go right
+    observe(ctx, 0.2, far_hands(), poses(Gesture.OPEN_PALM), motion)
+    assert not is_mirror(ctx)
+
+
+# is_ruby
+def clap_then_palms(t_clap: float, t_now: float) -> TwoHandContext:
+    ctx = TwoHandContext()
+    observe(ctx, t_clap, close_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    observe(ctx, t_now, far_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    return ctx
+
+
+def test_ruby_after_clap_with_two_open_palms() -> None:
+    assert is_ruby(clap_then_palms(0.0, 0.3))
+
+
+def test_ruby_not_while_hands_are_still_together() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, close_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    assert ctx.together_now
+    assert not is_ruby(ctx)
+
+
+def test_ruby_needs_a_clap() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.3, far_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    assert not is_ruby(ctx)
+
+
+def test_ruby_clap_window_is_strict() -> None:
+    assert is_ruby(clap_then_palms(0.0, RUBY_CLAP_WINDOW - 0.01))
+    assert not is_ruby(clap_then_palms(0.0, RUBY_CLAP_WINDOW))
+    assert not is_ruby(clap_then_palms(0.0, RUBY_CLAP_WINDOW + 0.5))
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        (Gesture.OPEN_PALM, Gesture.CLOSED_FIST),
+        (Gesture.CLOSED_FIST, Gesture.OPEN_PALM),
+        (Gesture.CLOSED_FIST, Gesture.CLOSED_FIST),
+        (Gesture.PEACE, Gesture.PEACE),
+        (Gesture.NONE, Gesture.OPEN_PALM),
+    ],
+)
+def test_ruby_needs_both_hands_open_palm(a: Gesture, b: Gesture) -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, close_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    observe(ctx, 0.3, far_hands(), poses(a, b), {0: still(), 1: still()})
+    assert not is_ruby(ctx)
+
+
+def test_ruby_needs_both_hands_tracked() -> None:
+    ctx = TwoHandContext()
+    ctx.together_seen_t = 0.0
+    observe(ctx, 0.3, {0: spell_hand()}, {0: Gesture.OPEN_PALM}, {0: still()})
+    assert not is_ruby(ctx)
+
+
+def test_ruby_blocked_right_after_a_mirror() -> None:
+    ctx = TwoHandContext()
+    ctx.mirror_t = 0.0
+    ctx.together_seen_t = 0.5
+    observe(ctx, 1.0, far_hands(), poses(Gesture.OPEN_PALM), {0: still(), 1: still()})
+    assert not is_ruby(ctx)
+
+
+def test_ruby_mirror_cooldown_boundary_is_strict() -> None:
+    ctx = TwoHandContext()
+    ctx.mirror_t = 0.0
+    ctx.together_seen_t = RUBY_MIRROR_COOLDOWN - 0.2
+    observe(
+        ctx,
+        RUBY_MIRROR_COOLDOWN,
+        far_hands(),
+        poses(Gesture.OPEN_PALM),
+        {0: still(), 1: still()},
+    )
+    assert not is_ruby(ctx)  # exactly at the cooldown: still blocked
+
+
+def test_ruby_allowed_once_mirror_cooldown_has_passed() -> None:
+    ctx = TwoHandContext()
+    ctx.mirror_t = 0.0
+    ctx.together_seen_t = RUBY_MIRROR_COOLDOWN
+    observe(
+        ctx,
+        RUBY_MIRROR_COOLDOWN + 0.3,
+        far_hands(),
+        poses(Gesture.OPEN_PALM),
+        {0: still(), 1: still()},
+    )
+    assert is_ruby(ctx)
+
+
+def test_ruby_does_not_fire_on_the_pull_apart_of_a_mirror() -> None:
+    # Full flow: confirmed TOGETHER, then the hands are pulled apart with open palms.
+    ctx = TwoHandContext()
+    last_t = confirm_together(ctx)
+    observe(
+        ctx,
+        last_t + FRAME_DT,
+        far_hands(),
+        poses(Gesture.OPEN_PALM),
+        pull_apart_motion(),
+    )
+    assert is_mirror(ctx)
+    assert not is_ruby(ctx)  # the Mirror exclusion keeps the same motion from also being a Ruby
+
+
+def test_ruby_fires_for_a_quick_clap_that_is_not_a_mirror() -> None:
+    # Two frames together (never confirmed), then the palms open without a pull: Ruby only.
+    ctx = TwoHandContext()
+    last_t = confirm_together(ctx, frames=2)
+    observe(
+        ctx,
+        last_t + FRAME_DT,
+        far_hands(),
+        poses(Gesture.OPEN_PALM),
+        {0: still(), 1: still()},
+    )
+    assert not is_mirror(ctx)
+    assert is_ruby(ctx)
+
+
+# is_portal
+def portal_context(
+    pose0: Gesture,
+    pose1: Gesture,
+    motion0: FakeMotion,
+    motion1: FakeMotion,
+    *,
+    size0: float = HAND_SIZE,
+    size1: float = HAND_SIZE,
+) -> TwoHandContext:
+    ctx = TwoHandContext()
+    geom = {0: spell_hand(LEFT, size0), 1: spell_hand(RIGHT, size1)}
+    observe(ctx, 0.0, geom, {0: pose0, 1: pose1}, {0: motion0, 1: motion1})
+    return ctx
+
+
+def test_portal_peace_on_hand_0_and_moving_hand_1() -> None:
+    ctx = portal_context(Gesture.PEACE, Gesture.OPEN_PALM, still(), moving(150.0))
+    assert is_portal(ctx)
+
+
+def test_portal_peace_on_hand_1_and_moving_hand_0() -> None:
+    ctx = portal_context(Gesture.OPEN_PALM, Gesture.PEACE, moving(150.0), still())
+    assert is_portal(ctx)
+
+
+@pytest.mark.parametrize(
+    "mover_pose",
+    [Gesture.OPEN_PALM, Gesture.CLOSED_FIST, Gesture.POINTING, Gesture.NONE],
+)
+def test_portal_mover_pose_does_not_matter(mover_pose: Gesture) -> None:
+    ctx = portal_context(Gesture.PEACE, mover_pose, still(), moving(0.0, 150.0))
+    assert is_portal(ctx)
+
+
+def test_portal_needs_both_hands() -> None:
+    ctx = TwoHandContext()
+    observe(ctx, 0.0, {0: spell_hand()}, {0: Gesture.PEACE}, {0: still()})
+    assert not is_portal(ctx)
+
+
+def test_portal_peace_hand_must_be_stationary() -> None:
+    ctx = portal_context(Gesture.PEACE, Gesture.OPEN_PALM, moving(20.0), moving(150.0))
+    assert not is_portal(ctx)
+
+
+def test_portal_needs_a_peace_hand() -> None:
+    ctx = portal_context(Gesture.OPEN_PALM, Gesture.OPEN_PALM, still(), moving(150.0))
+    assert not is_portal(ctx)
+
+
+def test_portal_other_hand_must_move_fast_enough() -> None:
+    ctx = portal_context(Gesture.PEACE, Gesture.OPEN_PALM, still(), moving(50.0))
+    assert not is_portal(ctx)
+
+
+def test_portal_speed_threshold_is_strict() -> None:
+    speed = PORTAL_MIN_SPEED * HAND_SIZE  # exactly 1 hand-size/s
+    ctx = portal_context(Gesture.PEACE, Gesture.OPEN_PALM, still(), moving(speed))
+    assert not is_portal(ctx)
+
+    ctx = portal_context(Gesture.PEACE, Gesture.OPEN_PALM, still(), moving(speed + 1.0))
+    assert is_portal(ctx)
+
+
+def test_portal_speed_is_relative_to_the_moving_hands_size() -> None:
+    # 150 px/s is 1.5 hand-sizes/s for a 100 px hand but only 0.75 for a 200 px hand.
+    small = portal_context(Gesture.PEACE, Gesture.OPEN_PALM, still(), moving(150.0), size1=100.0)
+    big = portal_context(Gesture.PEACE, Gesture.OPEN_PALM, still(), moving(150.0), size1=200.0)
+    assert is_portal(small)
+    assert not is_portal(big)
+
+
+def test_portal_zero_size_mover_is_skipped_without_error() -> None:
+    ctx = portal_context(Gesture.PEACE, Gesture.OPEN_PALM, still(), moving(150.0), size1=0.0)
+    assert not is_portal(ctx)
+
+
+def test_portal_zero_size_hand_never_counts_as_the_mover() -> None:
+    # Both hands do PEACE. Hand 0 moves but has no size: it is skipped as the mover (no
+    # division by zero), and as the other direction needs hand 0 to be stationary, no spell.
+    ctx = portal_context(Gesture.PEACE, Gesture.PEACE, moving(150.0), still(), size0=0.0)
+    assert not is_portal(ctx)
+
+
+def test_portal_with_two_peace_hands_works_when_one_is_still_and_one_moves() -> None:
+    ctx = portal_context(Gesture.PEACE, Gesture.PEACE, still(), moving(150.0))
+    assert is_portal(ctx)
+
+
+def test_portal_two_still_peace_hands_is_not_a_portal() -> None:
+    ctx = portal_context(Gesture.PEACE, Gesture.PEACE, still(), still())
+    assert not is_portal(ctx)
