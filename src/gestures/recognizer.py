@@ -385,6 +385,11 @@ def mirror_metrics(ctx: TwoHandContext) -> tuple[float, bool, bool] | None:
 
 
 def is_mirror(ctx: TwoHandContext) -> bool:
+    # Ruby owns the both-palms-open pull-apart: without this guard the same
+    # motion satisfies both detectors and (with arbitration) Ruby would still
+    # lose whenever its pose confirms a frame later than Mirror's motion.
+    if ctx.pose.get(0) is Gesture.OPEN_PALM and ctx.pose.get(1) is Gesture.OPEN_PALM:
+        return False
     if ctx.t - ctx.together_active_t > MIRROR_WINDOW:  # TOGETHER must have just ended
         return False
     m = mirror_metrics(ctx)
