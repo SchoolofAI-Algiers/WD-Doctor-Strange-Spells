@@ -45,6 +45,11 @@ class GestureConfig:
     min_hand_size_norm: float = 0.05  # avoids classifying a non-existent hand as a closed fist
     thumb_threshold: float = 1.3
     finger_threshold: float = 1.5
+    # Ring/pinky may read partially extended when the hand is tilted
+    # (PIP-MCP foreshortened). Peace allows them up to this ratio, while a
+    # true open palm still needs all four clearly out. Slightly above
+    # finger_threshold on purpose so Peace is easier than Open.
+    peace_curl_max_ratio: float = 1.65
     together_max_ratio: float = 1.0
     stability: StabilityConfig = field(default_factory=StabilityConfig)
     pinch_max_ratio: float = 0.3
@@ -72,6 +77,28 @@ def is_finger_extended(landmarks_norm: FloatArray, finger: FingerSpec, threshold
     pip_to_mcp = distance(landmarks_norm[finger.pip], landmarks_norm[finger.mcp])
 
     return tip_to_mcp > threshold * pip_to_mcp
+
+
+def finger_ratio(landmarks_norm: FloatArray, finger: FingerSpec) -> float:
+    """tip-MCP distance relative to pip-MCP distance (same ratio as above)."""
+    pip_to_mcp = distance(landmarks_norm[finger.pip], landmarks_norm[finger.mcp])
+    if pip_to_mcp < 1e-9:
+        return float("inf")
+    return distance(landmarks_norm[finger.tip], landmarks_norm[finger.mcp]) / pip_to_mcp
+
+
+def is_peace_pose(landmarks_norm: FloatArray, config: GestureConfig) -> bool:
+    """Index+middle out, ring+pinky folded (with tilt margin, thumb ignored)."""
+    by_name = {f.name: f for f in FINGERS}
+    if finger_ratio(landmarks_norm, by_name["index"]) <= config.finger_threshold:
+        return False
+    if finger_ratio(landmarks_norm, by_name["middle"]) <= config.finger_threshold:
+        return False
+    if finger_ratio(landmarks_norm, by_name["ring"]) >= config.peace_curl_max_ratio:
+        return False
+    if finger_ratio(landmarks_norm, by_name["pinky"]) >= config.peace_curl_max_ratio:
+        return False
+    return True
 
 
 def extended_fingers(landmarks_norm: FloatArray, config: GestureConfig) -> frozenset[str]:
@@ -112,6 +139,10 @@ def classify_hand(geometry: HandGeometry, config: GestureConfig | None = None) -
         return Gesture.CLOSED_FIST
     if others >= {"index", "ring", "pinky"} and is_thumb_middle_pinch(geometry, config):
         return Gesture.THUMB_MIDDLE_PINCH
+    # Peace before Open: a tilted peace can read ring/pinky slightly extended,
+    # which must not flip it into an open palm + shield.
+    if is_peace_pose(geometry.landmarks_norm, config):
+        return Gesture.PEACE
     if len(others) == 4:
         return Gesture.OPEN_PALM
     if others == frozenset({"index"}):

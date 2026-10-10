@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.geometry.calculator import HandGeometry
+from src.gestures.recognizer import GestureConfig, extended_fingers
 from src.pipeline.state import PipelineState
 from src.tracking.hand_tracker import HandLandmarks
 
@@ -72,9 +73,13 @@ def draw_debug_overlay(frame: Frame, state: PipelineState) -> None:
             put(frame, motion_text, x, max(cy - 70, 40), (200, 200, 200), 0.5)
 
         raw = state.raw_gestures.get(hid)
+        ext = "".join(
+            n[0].upper() if n in extended_fingers(geo.landmarks_norm, GestureConfig()) else "-"
+            for n in ("thumb", "index", "middle", "ring", "pinky")
+        )
         put(
             frame,
-            f"raw={raw.value if raw else '-'} size={geo.hand_size_norm:.2f}",
+            f"raw={raw.value if raw else '-'} ext={ext} size={geo.hand_size_norm:.2f}",
             x,
             max(cy - 50, 60),
             (255, 200, 0),
