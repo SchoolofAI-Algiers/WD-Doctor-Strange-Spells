@@ -392,7 +392,9 @@ class TwoHandContext:
             self.ruby_latched = False
         elif self.clap_now:
             self.ruby_latched = False
-        elif self.pose.get(0) is Gesture.CLOSED_FIST and self.pose.get(1) is Gesture.CLOSED_FIST:
+        elif (
+            self.pose.get(0) is Gesture.CLOSED_FIST or self.pose.get(1) is Gesture.CLOSED_FIST
+        ):
             self.ruby_latched = False
         elif (
             not self.clap_now
