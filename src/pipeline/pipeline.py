@@ -178,6 +178,9 @@ class Pipeline:
         # gestures (stabilized) and motion, using the same ids
         states = self.recognizer.update(geometries, handedness)
         raw = dict(self.recognizer.raw)
+        # Two-hand spells read the STABILIZED pose (not raw) so PEACE/OPEN_PALM
+        # cannot flicker for one frame and reset the 5-frame confirmation.
+        stable = {s.hand_id: s.gesture for s in states}
         motions: dict[int, MotionState] = {}
         for hid, hand, geo in zip(ids, hands, geometries, strict=True):
             tip = (float(hand.landmarks_px[INDEX_TIP][0]), float(hand.landmarks_px[INDEX_TIP][1]))
@@ -187,7 +190,7 @@ class Pipeline:
         self.motion.retain_only(by_id)  # forget hands that left the frame
 
         # two-hand spells: call every frame, even with no hands, so timers keep running
-        self.context.observe(anim_time, by_id, raw, motions)
+        self.context.observe(anim_time, by_id, stable, motions)
         raw_active = {
             name: det.update(geometries).state is PoseState.ACTIVE
             for name, det in self.detectors.items()
