@@ -141,4 +141,22 @@ They are different spaces. Do not feed the output back into `norm2px`.
 Passed as a `GeometryConfig` to `GeometryCalculator`.
 
 ## Performance Targets
-- Compute time: <0.5ms per hand
+- Compute time: <0.5ms per hand (**not measured yet**)
+- No allocations in hot path (**not met**: each call creates small temporary arrays, for example the resolution array in `norm2px`, the index selections in `palm_center`, and the result of `landmark_normalization`). With 21 landmarks the cost is small, so measure first and optimize only if the target is missed.
+
+## Testing
+Tests live in `tests/` and run with `pytest`.
+
+| Function | Planned tests | Status |
+|----------|---------------|--------|
+| `distance` | 3-4-5 triangle, same point, symmetry, negative coordinates | written |
+| `hand_size` | each method, default method, wrist away from origin, invalid method raises `ValueError` | written |
+| `palm_orientation` | four cardinal directions (parametrized), diagonal, landmark 9 away from origin | written |
+| `palm_center` | each strategy on a known configuration, weighted strategy gives the middle MCP double weight, invalid strategy raises | todo |
+| `norm2px` | known scaling, z column dropped | todo |
+| `landmark_normalization` | wrist at origin, scale by hand size, zeros when size is `0` | todo |
+| `GeometryCalculator.compute` | full `HandGeometry` for a known hand, config is respected | todo |
+
+- **Unit:** known landmark configurations -> expected geometry values.
+- **Property:** `landmarks_norm` is invariant to translating the whole hand and to scaling it (same output for the same hand at different positions and distances).
+- **Edge:** single point, collinear points, zero hand size.
